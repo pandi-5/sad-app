@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}Archivo demasiado grande · {{ app_name }}{% endblock %}
+{% block body %}
+<section class="narrow">
+  <div class="empty-state card">
+    {{ icon("upload", "empty-state__icon") }}
+    <h1>El envío es demasiado grande</h1>
+    <p>{{ message or "Reduce el tamaño de los archivos e inténtalo de nuevo." }}</p>
+    <a class="btn btn--primary" href="{{ url_for('files.index') }}">{{ icon("arrow-left") }} Volver</a>
+  </div>
+</section>
+{% endblock %}

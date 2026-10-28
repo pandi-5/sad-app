@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}No encontrado · {{ app_name }}{% endblock %}
+{% block body %}
+<section class="narrow">
+  <div class="empty-state card">
+    {{ icon("search", "empty-state__icon") }}
+    <h1>No encontramos esa página</h1>
+    <p>El archivo o la dirección que buscas no existe o fue eliminado.</p>
+    <a class="btn btn--primary" href="{{ url_for('files.index') }}">{{ icon("arrow-left") }} Volver al inicio</a>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}Panel del coordinador · {{ app_name }}{% endblock %}
+
+{% block body %}
+<div class="page-head">
+  <div>
+    <span class="eyebrow">{{ icon("shield") }} Coordinación</span>
+    <h1>Panel del coordinador</h1>
+    <p class="muted">Controla permisos, el modo de concurrencia, los bloqueos y la auditoría.</p>
+  </div>
+  <div class="page-head__side">
+    <span class="live" data-live-indicator><span class="live__dot"></span> En vivo</span>
+    <a class="btn btn--ghost btn--sm" href="{{ url_for('files.index') }}">{{ icon("files") }} Ver archivos</a>
+  </div>
+</div>
+
+<section class="stats" aria-label="Resumen">
+  <div class="stat card"><span class="stat__value" data-stat="files">{{ stats.files }}</span><span class="stat__label">{{ icon("files") }} archivos</span></div>
+  <div class="stat card"><span class="stat__value" data-stat="bytes">{{ stats.bytes|tamano }}</span><span class="stat__label">{{ icon("database") }} usados</span></div>
+  <div class="stat card"><span class="stat__value" data-stat="text">{{ stats.text }}</span><span class="stat__label">{{ icon("text") }} editables</span></div>
+  <div class="stat card"><span class="stat__value" data-stat="online">{{ stats.online }}<small>/{{ stats.users }}</small></span><span class="stat__label">{{ icon("users") }} conectados</span></div>
+</section>
+
+<div class="admin-shell" data-admin data-initial-tab="{{ 'registro' if log_op or log_user or log_q or log_page > 1 else '' }}">
+  <nav class="tabs" role="tablist" aria-label="Secciones del panel">
+    <button class="tab is-active" role="tab" aria-selected="true" aria-controls="tab-general"
+            id="tab-btn-general" data-tab-button="general">{{ icon("settings") }} General</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-usuarios"
+            id="tab-btn-usuarios" data-tab-button="usuarios">{{ icon("users") }} Usuarios <span class="count">{{ users|length }}</span></button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-archivos"
+            id="tab-btn-archivos" data-tab-button="archivos">{{ icon("files") }} Archivos <span class="count">{{ files|length }}</span></button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-registro"
+            id="tab-btn-registro" data-tab-button="registro">{{ icon("log") }} Registro</button>
+  </nav>
+
+  <section class="tab-panel is-active" role="tabpanel" id="tab-general" aria-labelledby="tab-btn-general" data-tab-panel="general">
+    <div class="card">
+      <div class="section-head">
+        <h2>{{ icon("settings") }} Control de concurrencia</h2>
+        <span class="hint">El cambio se aplica de inmediato a todos los clientes.</span>
+      </div>
+      <form action="{{ url_for('admin.change_mode') }}" method="post" data-autosubmit>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="mode-grid">
+          {% for key, info in modes.items() %}
+          <label class="mode-card {{ 'is-selected' if key == mode }}">
+            <input type="radio" name="mode" value="{{ key }}" {{ 'checked' if key == mode }} data-autosubmit-input>
+            <span class="mode-card__head">
+              <strong>{{ info.label }}</strong>
+              {% if key == mode %}<span class="badge badge--ok">activo</span>{% endif %}
+            </span>
+            <span class="mode-card__short">{{ info.short }}</span>
+            <span class="mode-card__desc">{{ info.description }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        <noscript><button class="btn btn--primary" type="submit">Aplicar modo</button></noscript>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>{{ icon("info") }} Cómo se comportan los modos</h2>
+      <div class="table-wrap">
+        <table class="simple-table">
+          <thead><tr><th>Modo</th><th>Qué pasa si dos personas guardan a la vez</th><th>Ideal para</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Libre</strong></td><td>Gana el último; el anterior se pierde y queda registrado.</td><td>Archivos de un solo autor o pruebas.</td></tr>
+            <tr><td><strong>Versiones</strong></td><td>El segundo recibe un conflicto y decide: pisar, descartar o guardar copia.</td><td>Trabajo colaborativo sin esperas.</td></tr>
+            <tr><td><strong>Bloqueo</strong></td><td>Solo el dueño del bloqueo puede guardar; los demás leen.</td><td>Evitar cualquier edición simultánea.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab-panel" role="tabpanel" id="tab-usuarios" aria-labelledby="tab-btn-usuarios" data-tab-panel="usuarios">
+    <div class="card">
+      <div class="section-head section-head--wrap">
+        <h2>{{ icon("users") }} Clientes y permisos</h2>
+        <span class="hint">Los cambios de permisos se guardan al marcar la casilla.</span>
+      </div>
+      {% if users %}
+      <div class="table-wrap">
+        <table class="simple-table" id="usuarios">
+          <caption class="sr-only">Usuarios registrados</caption>
+          <thead>
+            <tr><th>Usuario</th><th>IP</th><th>Estado</th><th>Permisos</th><th>Acciones</th></tr>
+          </thead>
+          <tbody>
+            {% for x in users %}
+            <tr data-user-row="{{ x.name }}">
+              <td>
+                <span class="avatar avatar--sm">{{ x.name[0]|upper }}</span>
+                <strong>{{ x.name }}</strong>
+                {% if not x.active %}<span class="badge badge--danger">desactivada</span>{% endif %}
+              </td>
+              <td class="mono" data-user-ip="{{ x.name }}">{{ x.ip or "—" }}</td>
+              <td>
+                <span class="presence {{ 'is-online' if x.online else 'is-offline' }}" data-user-online="{{ x.name }}">
+                  <span class="presence__dot"></span>
+                  <span class="presence__text">{{ "conectado" if x.online else "desconectado" }}</span>
+                </span>
+                <span class="sub" data-user-seen="{{ x.name }}" data-seen="{{ x.seen }}">{{ x.seen|fecha if x.seen else "nunca" }}</span>
+              </td>
+              <td>
+                <form action="{{ url_for('admin.permissions', name=x.name) }}" method="post"
+                      class="perms" data-autosubmit>
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <label class="switch"><input type="checkbox" name="r" {{ 'checked' if x.r }} data-autosubmit-input><span>Leer</span></label>
+                  <label class="switch"><input type="checkbox" name="w" {{ 'checked' if x.w }} data-autosubmit-input><span>Escribir</span></label>
+                  <label class="switch"><input type="checkbox" name="d" {{ 'checked' if x.d }} data-autosubmit-input><span>Borrar</span></label>
+                  <noscript><button class="btn btn--secondary btn--sm" type="submit">Guardar</button></noscript>
+                </form>
+              </td>
+              <td class="row-actions">
+                <form action="{{ url_for('admin.reset_password', name=x.name) }}" method="post"
+                      data-confirm="¿Generar una contraseña temporal para {{ x.name }}? Se cerrarán sus sesiones.">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="btn btn--ghost btn--sm" type="submit" title="Restablecer contraseña">{{ icon("key") }} Contraseña</button>
+                </form>
+                <form action="{{ url_for('admin.set_active', name=x.name) }}" method="post"
+                      data-confirm="¿{{ 'Desactivar' if x.active else 'Activar' }} la cuenta de {{ x.name }}?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="btn btn--{{ 'danger' if x.active else 'secondary' }} btn--sm" type="submit">
+                    {{ icon("ban" if x.active else "check") }} {{ "Desactivar" if x.active else "Activar" }}
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-state empty-state--small">
+        {{ icon("users", "empty-state__icon") }}
+        <h3>Todavía no hay clientes</h3>
+        <p>Cuando alguien cree una cuenta aparecerá aquí automáticamente.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="tab-panel" role="tabpanel" id="tab-archivos" aria-labelledby="tab-btn-archivos" data-tab-panel="archivos">
+    <div class="card">
+      <div class="section-head">
+        <h2>{{ icon("files") }} Archivos y bloqueos</h2>
+        <span class="hint">Puedes liberar bloqueos o borrar archivos sin esperar al dueño.</span>
+      </div>
+      {% if files %}
+      <div class="table-wrap">
+        <table class="simple-table" id="archivos">
+          <caption class="sr-only">Archivos del servidor</caption>
+          <thead>
+            <tr><th>Archivo</th><th>Tamaño</th><th>Versión</th><th>Último autor</th><th>Bloqueo</th><th>Acciones</th></tr>
+          </thead>
+          <tbody>
+            {% for f in files %}
+            <tr data-file-row="{{ f.id }}">
+              <td>
+                <div class="file-cell">
+                  <span class="file-icon file-icon--{{ 'text' if f.is_text else ('image' if f.image else 'file') }}">
+                    {{ icon("text" if f.is_text else ("image" if f.image else "file")) }}
+                  </span>
+                  <div class="file-cell__body">
+                    <a class="file-cell__name" href="{{ url_for('files.view', file_id=f.id) }}">{{ f.name }}</a>
+                    {% if f.missing %}<span class="badge badge--danger">faltante</span>{% endif %}
+                    <span class="file-cell__meta">{{ f.mime or "—" }} · {{ f.versions }} versiones</span>
+                  </div>
+                </div>
+              </td>
+              <td class="nowrap">{{ f.size|tamano }}</td>
+              <td><span class="badge badge--soft">v{{ f.ver }}</span></td>
+              <td>{{ f.author or "—" }}</td>
+              <td data-file-lock="{{ f.id }}">
+                {% if f.owner %}
+                <span class="badge badge--lock">{{ icon("lock") }} {{ f.owner }}
+                  {% if f.remaining %}<span data-lock-remaining="{{ f.remaining }}">{{ f.remaining }}s</span>{% endif %}
+                </span>
+                {% else %}
+                <span class="badge badge--ok">{{ icon("unlock") }} libre</span>
+                {% endif %}
+              </td>
+              <td class="row-actions">
+                {% if f.owner %}
+                <form action="{{ url_for('admin.force_unlock', file_id=f.id) }}" method="post"
+                      data-confirm="¿Liberar el bloqueo de «{{ f.name }}»?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="btn btn--ghost btn--sm" type="submit">{{ icon("unlock") }} Liberar</button>
+                </form>
+                {% endif %}
+                <a class="btn btn--icon btn--sm" href="{{ url_for('files.download', file_id=f.id) }}" title="Descargar">
+                  {{ icon("download") }}
+                </a>
+                <form action="{{ url_for('admin.delete_file', file_id=f.id) }}" method="post"
+                      data-confirm="¿Borrar «{{ f.name }}» y todas sus versiones?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="btn btn--danger btn--sm" type="submit">{{ icon("trash") }} Borrar</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-state empty-state--small">
+        {{ icon("folder-open", "empty-state__icon") }}
+        <h3>No hay archivos</h3>
+        <p>Cuando los usuarios suban archivos aparecerán aquí.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="tab-panel" role="tabpanel" id="tab-registro" aria-labelledby="tab-btn-registro" data-tab-panel="registro">
+    <div class="card">
+      <div class="section-head section-head--wrap">
+        <h2>{{ icon("log") }} Registro de operaciones <span class="count">{{ log_total }}</span></h2>
+        <form class="toolbar" method="get" action="{{ url_for('admin.panel') }}#registro" role="search">
+          <label class="sr-only" for="log-op">Operación</label>
+          <select id="log-op" name="op">
+            <option value="">Todas las operaciones</option>
+            {% for item in ops %}
+            <option value="{{ item }}" {{ 'selected' if item == log_op }}>{{ item }}</option>
+            {% endfor %}
+          </select>
+          <label class="sr-only" for="log-user">Usuario</label>
+          <input id="log-user" name="user" value="{{ log_user }}" placeholder="usuario">
+          <label class="search">
+            {{ icon("search") }}
+            <span class="sr-only">Buscar en el registro</span>
+            <input type="search" name="q" value="{{ log_q }}" placeholder="archivo o detalle…">
+          </label>
+          <button class="btn btn--secondary btn--sm" type="submit">{{ icon("filter") }} Filtrar</button>
+          {% if log_op or log_user or log_q %}
+          <a class="btn btn--ghost btn--sm" href="{{ url_for('admin.panel') }}#registro">{{ icon("x") }} Limpiar</a>
+          {% endif %}
+        </form>
+      </div>
+
+      {% if logs %}
+      <div class="table-wrap">
+        <table class="simple-table log-table">
+          <caption class="sr-only">Últimas operaciones registradas</caption>
+          <thead>
+            <tr><th>Hora</th><th>Usuario</th><th>IP</th><th>Operación</th><th>Archivo</th><th>Detalle</th></tr>
+          </thead>
+          <tbody>
+            {% for l in logs %}
+            <tr>
+              <td class="nowrap mono">{{ l.ts|hora }}</td>
+              <td>{{ l.usr or "—" }}</td>
+              <td class="mono">{{ l.ip or "—" }}</td>
+              <td><span class="badge badge--{{ l.op|op_class or 'soft' }}">{{ l.op }}</span></td>
+              <td class="mono">{{ l.file or "—" }}</td>
+              <td class="log-info">{{ l.info or "—" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if log_pages > 1 %}
+      <nav class="pagination" aria-label="Paginación del registro">
+        {% if log_page > 1 %}
+        <a class="btn btn--ghost btn--sm" href="{{ url_for('admin.panel', op=log_op, user=log_user, q=log_q, page=log_page-1) }}#registro">{{ icon("chevron-left") }} Anterior</a>
+        {% else %}
+        <span class="btn btn--ghost btn--sm is-disabled">{{ icon("chevron-left") }} Anterior</span>
+        {% endif %}
+        <span class="pagination__info">Página {{ log_page }} de {{ log_pages }}</span>
+        {% if log_page < log_pages %}
+        <a class="btn btn--ghost btn--sm" href="{{ url_for('admin.panel', op=log_op, user=log_user, q=log_q, page=log_page+1) }}#registro">Siguiente {{ icon("chevron-right") }}</a>
+        {% else %}
+        <span class="btn btn--ghost btn--sm is-disabled">Siguiente {{ icon("chevron-right") }}</span>
+        {% endif %}
+      </nav>
+      {% endif %}
+      {% else %}
+      <div class="empty-state empty-state--small">
+        {{ icon("log", "empty-state__icon") }}
+        <h3>Sin operaciones registradas</h3>
+        <p>Las acciones de los usuarios aparecerán aquí.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+{% endblock %}

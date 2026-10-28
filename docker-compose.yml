@@ -1,0 +1,15 @@
+services:
+  sad:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /app/data/sad.db
+      STORAGE_DIR: /app/storage
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+    user: "1000:1000"
+    restart: unless-stopped

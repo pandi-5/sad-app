@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}{{ f.name }} · {{ app_name }}{% endblock %}
+
+{% block body %}
+<div class="page-head page-head--compact">
+  <div>
+    <a class="backlink" href="{{ url_for('files.index') }}">{{ icon("arrow-left") }} Todos los archivos</a>
+    <h1 class="file-title">{{ f.name }}</h1>
+    <div class="badges">
+      <span class="badge badge--soft">{{ icon("history") }} v{{ f.ver }}</span>
+      <span class="badge badge--soft">{{ f.mime or "application/octet-stream" }}</span>
+      <span class="badge badge--soft">{{ f.size|tamano }}</span>
+      {% if owner %}
+      <span class="badge badge--lock">{{ icon("lock") }} {{ owner }}
+        {% if remaining %}<span data-lock-remaining="{{ remaining }}">{{ remaining }}s</span>{% endif %}
+      </span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="page-head__side">
+    <a class="btn btn--primary btn--sm" href="{{ url_for('files.download', file_id=f.id) }}">
+      {{ icon("download") }} Descargar
+    </a>
+    {% if u.d %}
+    <form action="{{ url_for('files.delete', file_id=f.id) }}" method="post"
+          data-confirm="¿Borrar «{{ f.name }}» y todas sus versiones?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn btn--danger btn--sm" type="submit">{{ icon("trash") }} Borrar</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert--error" role="alert">{{ icon("alert") }} <span>{{ error }}</span></div>
+{% endif %}
+
+<div class="detail-layout">
+  <section class="card">
+    {% if image %}
+    <div class="preview">
+      <img src="{{ url_for('files.preview', file_id=f.id) }}" alt="Vista previa de {{ f.name }}">
+    </div>
+    {% else %}
+    <div class="empty-state empty-state--small">
+      {{ icon("file", "empty-state__icon") }}
+      <h2>Vista previa no disponible</h2>
+      <p>Este tipo de archivo no se puede mostrar en el navegador. Descárgalo para abrirlo con la aplicación adecuada.</p>
+      <a class="btn btn--primary" href="{{ url_for('files.download', file_id=f.id) }}">
+        {{ icon("download") }} Descargar archivo
+      </a>
+    </div>
+    {% endif %}
+  </section>
+
+  <aside class="editor-side">
+    <section class="card">
+      <h2>{{ icon("info") }} Detalles</h2>
+      <dl class="details">
+        <div><dt>Tipo</dt><dd>{{ f.mime or "desconocido" }}</dd></div>
+        <div><dt>Tamaño</dt><dd>{{ f.size|tamano }}</dd></div>
+        <div><dt>Creado</dt><dd>{{ f.created_at|fecha }}</dd></div>
+        <div><dt>Actualizado</dt><dd>{{ f.updated_at|fecha }}</dd></div>
+        <div><dt>Último autor</dt><dd>{{ f.author or "—" }}</dd></div>
+        <div><dt>SHA-256</dt><dd class="mono hash" title="{{ f.hash }}">{{ (f.hash or "—")[:16] }}…</dd></div>
+      </dl>
+    </section>
+
+    {% if u.w %}
+    <section class="card">
+      <h2>{{ icon("upload") }} Reemplazar</h2>
+      {% if can_replace %}
+      <form action="{{ url_for('files.replace', file_id=f.id) }}" method="post"
+            enctype="multipart/form-data" class="stack" data-replace-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="ver" value="{{ f.ver }}">
+        <label class="field">
+          <span>Nueva versión del archivo</span>
+          <input type="file" name="file" required>
+        </label>
+        <p class="hint">Se guardará como v{{ f.ver + 1 }} y la actual quedará en el historial.</p>
+        <button class="btn btn--primary btn--sm" type="submit">{{ icon("upload") }} Reemplazar</button>
+      </form>
+      {% elif mode == "bloqueo" and owner %}
+      <p class="hint">
+        El archivo está bloqueado por <strong>{{ owner }}</strong>. Podrás
+        reemplazarlo cuando lo suelte o caduque el bloqueo.
+      </p>
+      {% elif mode == "bloqueo" %}
+      <p class="hint">
+        En el modo con bloqueo debes reservar el archivo antes de reemplazarlo.
+      </p>
+      <form action="{{ url_for('files.lock', file_id=f.id) }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn--secondary btn--sm" type="submit">{{ icon("lock") }} Reservar para reemplazar</button>
+      </form>
+      {% else %}
+      <p class="hint">No puedes reemplazar este archivo en este momento.</p>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    {% if u.w %}
+    <section class="card">
+      <h2>{{ icon("edit") }} Renombrar</h2>
+      {% if mode == "bloqueo" and owner and owner != u.name %}
+      <p class="hint">Bloqueado por <strong>{{ owner }}</strong>; no puedes renombrarlo hasta que lo libere.</p>
+      {% else %}
+      <form action="{{ url_for('files.rename', file_id=f.id) }}" method="post" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="sr-only" for="nuevo-nombre">Nuevo nombre</label>
+        <input id="nuevo-nombre" name="name" value="{{ f.name }}" maxlength="120" required>
+        <button class="btn btn--secondary btn--sm" type="submit">{{ icon("save") }} Guardar</button>
+      </form>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="section-head">
+        <h2>{{ icon("history") }} Versiones</h2>
+        <span class="count">{{ versions|length }}</span>
+      </div>
+      <ol class="version-list">
+        {% for v in versions %}
+        <li class="version-item">
+          <div>
+            <span class="version-item__ver">v{{ v.ver }}</span>
+            {% if v.ver == f.ver %}<span class="badge badge--ok">actual</span>{% endif %}
+            <div class="version-item__meta">{{ v.author or "—" }} · {{ v.ts|fecha }} · {{ v.size|tamano }}</div>
+            <div class="version-item__op">{{ v.op|lower }}{% if v.note %} · {{ v.note }}{% endif %}</div>
+          </div>
+          <div class="version-item__actions">
+            <a class="btn btn--icon btn--sm" href="{{ url_for('files.download_version', file_id=f.id, ver=v.ver) }}"
+               aria-label="Descargar versión {{ v.ver }}" title="Descargar">{{ icon("download") }}</a>
+            {% if can_replace and v.ver != f.ver %}
+            <form action="{{ url_for('files.restore_version', file_id=f.id, ver=v.ver) }}" method="post"
+                  data-confirm="¿Restaurar la v{{ v.ver }} como una versión nueva?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="ver" value="{{ f.ver }}">
+              <button class="btn btn--icon btn--sm" type="submit"
+                      aria-label="Restaurar versión {{ v.ver }}" title="Restaurar">{{ icon("restore") }}</button>
+            </form>
+            {% endif %}
+          </div>
+        </li>
+        {% else %}
+        <li class="hint">Todavía no hay versiones.</li>
+        {% endfor %}
+      </ol>
+    </section>
+  </aside>
+</div>
+{% endblock %}

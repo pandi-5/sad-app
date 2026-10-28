@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}Error interno · {{ app_name }}{% endblock %}
+{% block body %}
+<section class="narrow">
+  <div class="empty-state card">
+    {{ icon("alert", "empty-state__icon") }}
+    <h1>Algo salió mal</h1>
+    <p>El servidor no pudo completar la operación. Inténtalo de nuevo en unos segundos.</p>
+    <a class="btn btn--primary" href="{{ url_for('files.index') }}">{{ icon("arrow-left") }} Volver al inicio</a>
+  </div>
+</section>
+{% endblock %}

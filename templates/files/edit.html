@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}{{ f.name }} · {{ app_name }}{% endblock %}
+
+{% block body %}
+<div class="page-head page-head--compact">
+  <div>
+    <a class="backlink" href="{{ url_for('files.index') }}">{{ icon("arrow-left") }} Todos los archivos</a>
+    <h1 class="file-title">{{ f.name }}</h1>
+    <div class="badges">
+      <span class="badge badge--soft">{{ icon("history") }} v{{ f.ver }}</span>
+      <span class="badge badge--soft">{{ icon("settings") }} {{ modes[mode].label }}</span>
+      {% if owner %}
+      <span class="badge {{ 'badge--lock' if owner != u.name else 'badge--ok' }}">
+        {{ icon("lock") }}
+        {{ "Bloqueado por ti" if owner == u.name else "En edición por " ~ owner }}
+        {% if remaining %}<span data-lock-remaining="{{ remaining }}">{{ remaining }}s</span>{% endif %}
+      </span>
+      {% else %}
+      <span class="badge badge--ok">{{ icon("check") }} sin bloqueo</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="page-head__side">
+    <a class="btn btn--ghost btn--sm" href="{{ url_for('files.download', file_id=f.id) }}">
+      {{ icon("download") }} Descargar
+    </a>
+    <a class="btn btn--ghost btn--sm" href="{{ url_for('files.index') }}">
+      {{ icon("files") }} Lista
+    </a>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert--{{ 'warning' if conflict else 'error' }}" role="alert">
+  {{ icon("alert") }} <span>{{ error }}</span>
+</div>
+{% endif %}
+
+{% if conflict %}
+<section class="card conflict" aria-labelledby="conflict-title">
+  <div class="section-head">
+    <h2 id="conflict-title">{{ icon("alert") }} Conflicto de versiones</h2>
+    <span class="hint">Tu texto está a la izquierda del editor; la versión del servidor abajo.</span>
+  </div>
+  <p class="muted">
+    Mientras editabas, <strong>{{ f.author }}</strong> guardó la versión
+    <strong>v{{ f.ver }}</strong>. Nada se ha sobrescrito todavía.
+  </p>
+
+  {% if diff_rows %}
+  <div class="diff-wrap">
+    <table class="diff-table">
+      <caption class="sr-only">Diferencias entre la versión del servidor y tu texto</caption>
+      <thead>
+        <tr>
+          <th scope="col" colspan="2">Servidor · v{{ f.ver }}</th>
+          <th scope="col" colspan="2">Tu texto</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for kind, left_no, right_no, left, right in diff_rows %}
+        {% if kind == "truncated" %}
+        <tr><td colspan="4" class="diff-truncated">Diff demasiado grande; descarga ambas versiones para compararlas.</td></tr>
+        {% else %}
+        <tr class="diff-row diff-row--{{ kind }}">
+          <td class="diff-num">{{ left_no or "" }}</td>
+          <td class="diff-code">{{ left if left is not none else "" }}</td>
+          <td class="diff-num">{{ right_no or "" }}</td>
+          <td class="diff-code">{{ right if right is not none else "" }}</td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="diff-fallback">
+    <div>
+      <h3>Servidor · v{{ f.ver }}</h3>
+      <pre>{{ server_text }}</pre>
+    </div>
+    <div>
+      <h3>Tu texto</h3>
+      <pre>{{ text }}</pre>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="conflict__actions">
+    <form action="{{ url_for('files.save', file_id=f.id) }}" method="post"
+          data-confirm="Se sobrescribirá la v{{ f.ver }} de {{ f.author }} con tu texto. ¿Continuar?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="ver" value="{{ f.ver }}">
+      <textarea name="text" hidden>{{ text }}</textarea>
+      <button class="btn btn--danger" type="submit">
+        {{ icon("save") }} Guardar mi versión sobre v{{ f.ver }}
+      </button>
+    </form>
+    <form action="{{ url_for('files.save_copy', file_id=f.id) }}" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <textarea name="text" hidden>{{ text }}</textarea>
+      <button class="btn btn--primary" type="submit">
+        {{ icon("copy") }} Guardar como copia
+      </button>
+    </form>
+    <a class="btn btn--secondary" href="{{ url_for('files.view', file_id=f.id) }}">
+      {{ icon("refresh") }} Descartar y recargar
+    </a>
+  </div>
+</section>
+{% endif %}
+
+<div class="editor-layout" data-editor
+     data-file-id="{{ f.id }}"
+     data-version="{{ f.ver }}"
+     data-mode="{{ mode }}"
+     data-lock-owner="{{ owner or '' }}"
+     data-lock-initial="{{ remaining }}"
+     data-can-edit="{{ '1' if can_edit else '0' }}"
+     data-heartbeat-url="{{ url_for('files.heartbeat', file_id=f.id) }}"
+     data-status-url="{{ url_for('files.status', file_id=f.id) }}"
+     data-draft-key="sad:draft:{{ f.id }}:{{ f.ver }}">
+
+  <section class="card editor-card" aria-labelledby="editor-title">
+    <div class="editor-toolbar">
+      <div class="editor-toolbar__info">
+        <h2 id="editor-title" class="sr-only">Editor de {{ f.name }}</h2>
+        <span class="badge badge--soft">{{ icon("text") }} texto UTF-8</span>
+        <span class="hint">Máximo {{ max_text_kb }} KB</span>
+      </div>
+      <div class="editor-toolbar__actions">
+        {% if mode == "bloqueo" and owner == u.name %}
+        <form action="{{ url_for('files.unlock', file_id=f.id) }}" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn btn--ghost btn--sm" type="submit">{{ icon("unlock") }} Soltar bloqueo</button>
+        </form>
+        {% endif %}
+        <a class="btn btn--ghost btn--sm" href="{{ url_for('files.download', file_id=f.id) }}">
+          {{ icon("download") }} Descargar
+        </a>
+        {% if can_edit %}
+        <button class="btn btn--primary btn--sm" type="submit" form="save-form" data-save-button>
+          {{ icon("save") }} Guardar
+        </button>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="draft-banner" data-draft-banner hidden>
+      {{ icon("history") }}
+      <span>Hay un borrador local sin guardar de esta versión.</span>
+      <button type="button" class="btn btn--secondary btn--sm" data-draft-restore>Recuperar borrador</button>
+      <button type="button" class="btn btn--ghost btn--sm" data-draft-discard>Descartar</button>
+    </div>
+
+    {% if not can_edit %}
+    <div class="alert alert--info">
+      {{ icon("lock") }}
+      <span>
+        {% if not u.w %}
+        No tienes permiso de escritura: este archivo es de solo lectura para ti.
+        {% elif mode == "bloqueo" %}
+        <strong>{{ owner or "Otro usuario" }}</strong> tiene el archivo bloqueado.
+        Puedes leerlo, pero no guardar hasta que lo suelte o caduque el bloqueo.
+        {% else %}
+        No puedes editar este archivo en este momento.
+        {% endif %}
+      </span>
+    </div>
+    {% endif %}
+
+    <form id="save-form" action="{{ url_for('files.save', file_id=f.id) }}" method="post"
+          data-editor-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="ver" value="{{ f.ver }}" data-version-input>
+      <label class="sr-only" for="editor-text">Contenido de {{ f.name }}</label>
+      <textarea id="editor-text" name="text" class="editor" spellcheck="false"
+                data-editor-text {% if not can_edit %}readonly{% endif %}>{{ text }}</textarea>
+    </form>
+
+    <div class="editor-status">
+      <span data-editor-state>
+        {% if can_edit %}{{ icon("check") }} Sin cambios{% else %}{{ icon("lock") }} Solo lectura{% endif %}
+      </span>
+      <span data-editor-count>{{ text|length }} caracteres</span>
+    </div>
+  </section>
+
+  <aside class="editor-side">
+    <section class="card">
+      <h2>{{ icon("info") }} Detalles</h2>
+      <dl class="details">
+        <div><dt>Tipo</dt><dd>{{ f.mime or "desconocido" }}</dd></div>
+        <div><dt>Tamaño</dt><dd>{{ f.size|tamano }}</dd></div>
+        <div><dt>Creado</dt><dd>{{ f.created_at|fecha }}</dd></div>
+        <div><dt>Actualizado</dt><dd>{{ f.updated_at|fecha }}</dd></div>
+        <div><dt>Último autor</dt><dd>{{ f.author or "—" }}</dd></div>
+        <div><dt>SHA-256</dt><dd class="mono hash" title="{{ f.hash }}">{{ (f.hash or "—")[:16] }}…</dd></div>
+      </dl>
+    </section>
+
+    <section class="card lock-card" data-lock-card>
+      <h2>{{ icon("lock") }} Bloqueo</h2>
+      {% if mode == "bloqueo" %}
+        {% if owner == u.name %}
+        <p class="lock-card__state lock-card__state--ok">
+          {{ icon("check") }} Tienes el archivo reservado.
+        </p>
+        <p class="hint">El bloqueo se renueva mientras esta página esté abierta. Caduca en
+          <strong data-lock-countdown>{{ remaining }}s</strong>.</p>
+        {% elif owner %}
+        <p class="lock-card__state lock-card__state--warn">
+          {{ icon("lock") }} Reservado por <strong>{{ owner }}</strong>.
+        </p>
+        <p class="hint">Podrás editarlo cuando lo suelte o caduque.</p>
+        {% else %}
+        <p class="lock-card__state">{{ icon("unlock") }} Libre.</p>
+        {% if u.w %}
+        <form action="{{ url_for('files.lock', file_id=f.id) }}" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn btn--secondary btn--sm" type="submit">{{ icon("lock") }} Reservar para editar</button>
+        </form>
+        {% endif %}
+        {% endif %}
+      {% else %}
+      <p class="lock-card__state">{{ icon("unlock") }} No se usa en el modo {{ modes[mode].label }}.</p>
+      {% endif %}
+      <p class="hint" data-heartbeat-state></p>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>{{ icon("history") }} Versiones</h2>
+        <span class="count">{{ versions|length }}</span>
+      </div>
+      <ol class="version-list">
+        {% for v in versions %}
+        <li class="version-item">
+          <div>
+            <span class="version-item__ver">v{{ v.ver }}</span>
+            {% if v.ver == f.ver %}<span class="badge badge--ok">actual</span>{% endif %}
+            <div class="version-item__meta">
+              {{ v.author or "—" }} · {{ v.ts|fecha }} · {{ v.size|tamano }}
+            </div>
+            <div class="version-item__op">{{ v.op|lower }}{% if v.note %} · {{ v.note }}{% endif %}</div>
+          </div>
+          <div class="version-item__actions">
+            <a class="btn btn--icon btn--sm" href="{{ url_for('files.download_version', file_id=f.id, ver=v.ver) }}"
+               aria-label="Descargar versión {{ v.ver }}" title="Descargar">{{ icon("download") }}</a>
+            {% if can_edit and v.ver != f.ver %}
+            <form action="{{ url_for('files.restore_version', file_id=f.id, ver=v.ver) }}" method="post"
+                  data-confirm="¿Restaurar la v{{ v.ver }} como una versión nueva?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="ver" value="{{ f.ver }}">
+              <button class="btn btn--icon btn--sm" type="submit"
+                      aria-label="Restaurar versión {{ v.ver }}" title="Restaurar">{{ icon("restore") }}</button>
+            </form>
+            {% endif %}
+          </div>
+        </li>
+        {% else %}
+        <li class="hint">Todavía no hay versiones.</li>
+        {% endfor %}
+      </ol>
+    </section>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/editor.js') }}" defer></script>
+{% endblock %}

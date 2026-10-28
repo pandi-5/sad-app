@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}Entrar · {{ app_name }}{% endblock %}
+
+{% block body %}
+<section class="auth">
+  <div class="auth__intro">
+    <span class="eyebrow">{{ icon("shield") }} Servidor de archivos compartido</span>
+    <h1>Sube, comparte y edita tus archivos en un solo lugar.</h1>
+    <p class="lede">
+      Un espacio centralizado con permisos por usuario y tres formas de resolver
+      las ediciones simultáneas: libre, por versiones o con bloqueo.
+    </p>
+    <ul class="feature-list">
+      <li>{{ icon("upload") }} Sube cualquier tipo de archivo y descárgalo cuando quieras.</li>
+      <li>{{ icon("edit") }} Edita archivos de texto directamente en el navegador.</li>
+      <li>{{ icon("history") }} Consulta y restaura versiones anteriores.</li>
+      <li>{{ icon("users") }} El coordinador controla quién puede leer, escribir o borrar.</li>
+    </ul>
+  </div>
+
+  <div class="auth__cards">
+    <article class="card auth-card" aria-labelledby="login-title">
+      <h2 id="login-title">{{ icon("login") }} Entrar</h2>
+      {% if login_error %}
+      <div class="alert alert--error" role="alert">{{ login_error }}</div>
+      {% endif %}
+      <form action="{{ url_for('auth.login') }}" method="post" class="stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="field">
+          <span>Usuario</span>
+          <input name="name" value="{{ login_name or '' }}" autocomplete="username"
+                 autocapitalize="none" spellcheck="false" required autofocus
+                 placeholder="tu-usuario">
+        </label>
+        <label class="field">
+          <span>Contraseña</span>
+          <span class="password-field">
+            <input type="password" name="password" autocomplete="current-password"
+                   required placeholder="••••••••">
+            <button type="button" class="password-field__toggle" data-password-toggle
+                    aria-label="Mostrar contraseña">{{ icon("eye") }}</button>
+          </span>
+        </label>
+        <button class="btn btn--primary btn--block" type="submit">
+          {{ icon("login") }} Entrar
+        </button>
+      </form>
+      <p class="hint">El coordinador también entra desde este formulario.</p>
+    </article>
+
+    <article class="card auth-card" id="registro" aria-labelledby="register-title">
+      <h2 id="register-title">{{ icon("user-plus") }} Crear cuenta</h2>
+      {% if register_errors %}
+      <div class="alert alert--error" role="alert">
+        <ul class="alert__list">
+          {% for error in register_errors %}<li>{{ error }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      <form action="{{ url_for('auth.register') }}" method="post" class="stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="field">
+          <span>Usuario</span>
+          <input name="name" value="{{ register_name or '' }}" autocomplete="username"
+                 autocapitalize="none" spellcheck="false" required
+                 minlength="2" maxlength="20"
+                 placeholder="letras, números, - y _">
+        </label>
+        <label class="field">
+          <span>Contraseña</span>
+          <span class="password-field">
+            <input type="password" name="password" autocomplete="new-password"
+                   required minlength="8" placeholder="Mínimo 8 caracteres">
+            <button type="button" class="password-field__toggle" data-password-toggle
+                    aria-label="Mostrar contraseña">{{ icon("eye") }}</button>
+          </span>
+        </label>
+        <label class="field">
+          <span>Repite la contraseña</span>
+          <span class="password-field">
+            <input type="password" name="confirm" autocomplete="new-password"
+                   required minlength="8" placeholder="Repite la contraseña">
+            <button type="button" class="password-field__toggle" data-password-toggle
+                    aria-label="Mostrar contraseña">{{ icon("eye") }}</button>
+          </span>
+        </label>
+        <button class="btn btn--secondary btn--block" type="submit">
+          {{ icon("user-plus") }} Crear cuenta
+        </button>
+      </form>
+      <p class="hint">
+        Las cuentas nuevas empiezan con permiso de lectura. El coordinador decide
+        si puedes escribir o borrar.
+      </p>
+    </article>
+  </div>
+</section>
+{% endblock %}

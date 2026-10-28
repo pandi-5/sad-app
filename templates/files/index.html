@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}Archivos · {{ app_name }}{% endblock %}
+
+{% block body %}
+<div class="page-head">
+  <div>
+    <span class="eyebrow">{{ icon("files") }} Biblioteca compartida</span>
+    <h1>Archivos en el servidor</h1>
+    <p class="muted">
+      Hola, <strong>{{ u.name }}</strong>. Este es el espacio común del equipo.
+    </p>
+  </div>
+  <div class="page-head__side">
+    <div class="permissions" aria-label="Tus permisos">
+      <span class="badge {{ 'badge--ok' if u.r else 'badge--muted' }}">{{ icon("eye") }} leer</span>
+      <span class="badge {{ 'badge--ok' if u.w else 'badge--muted' }}">{{ icon("edit") }} escribir</span>
+      <span class="badge {{ 'badge--ok' if u.d else 'badge--muted' }}">{{ icon("trash") }} borrar</span>
+    </div>
+    <a class="btn btn--ghost btn--sm" href="{{ url_for('auth.change_password') }}">{{ icon("key") }} Contraseña</a>
+  </div>
+</div>
+
+<section class="mode-banner mode-banner--{{ mode }}" aria-labelledby="mode-title">
+  <div class="mode-banner__icon">{{ icon("settings") }}</div>
+  <div>
+    <h2 id="mode-title">Modo de concurrencia: {{ modes[mode].label }}</h2>
+    <p>{{ modes[mode].description }}</p>
+  </div>
+</section>
+
+<section class="stats" aria-label="Resumen">
+  <div class="stat card">
+    <span class="stat__value">{{ stats.files }}</span>
+    <span class="stat__label">{{ icon("files") }} archivos</span>
+  </div>
+  <div class="stat card">
+    <span class="stat__value">{{ stats.bytes|tamano }}</span>
+    <span class="stat__label">{{ icon("database") }} en total</span>
+  </div>
+  <div class="stat card">
+    <span class="stat__value">{{ stats.text }}</span>
+    <span class="stat__label">{{ icon("text") }} editables</span>
+  </div>
+  <div class="stat card">
+    <span class="stat__value">{{ stats.locked }}</span>
+    <span class="stat__label">{{ icon("lock") }} bloqueados</span>
+  </div>
+</section>
+
+{% if u.w %}
+<section class="card upload-card" aria-labelledby="upload-title">
+  <div class="section-head">
+    <h2 id="upload-title">{{ icon("upload") }} Subir archivos</h2>
+    <span class="hint">Hasta {{ max_upload_mb }} MB por archivo · cualquier tipo</span>
+  </div>
+  <form action="{{ url_for('files.upload') }}" method="post"
+        enctype="multipart/form-data" data-upload-form
+        data-max-bytes="{{ max_upload_mb * 1024 * 1024 }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="dropzone" for="file-input" data-dropzone>
+      {{ icon("upload-cloud", "dropzone__icon") }}
+      <span class="dropzone__title">Arrastra tus archivos aquí</span>
+      <span class="dropzone__hint">o haz clic para seleccionarlos desde tu equipo</span>
+      <input id="file-input" type="file" name="files" multiple data-file-input>
+    </label>
+    <div class="upload-progress" data-upload-progress hidden>
+      <div class="upload-progress__bar"><span data-upload-bar></span></div>
+      <span class="upload-progress__label" data-upload-label>Subiendo…</span>
+    </div>
+    <ul class="upload-selection" data-upload-selection hidden></ul>
+    <div class="alert alert--error" data-upload-errors hidden role="alert"></div>
+    <div class="form-actions">
+      <button class="btn btn--primary" type="submit" data-upload-submit>
+        {{ icon("upload") }} Subir archivos
+      </button>
+    </div>
+  </form>
+</section>
+{% else %}
+<div class="alert alert--info">
+  {{ icon("lock") }}
+  <span>Tu cuenta es de solo lectura. Pídele al coordinador permiso de escritura para subir o editar archivos.</span>
+</div>
+{% endif %}
+
+<section class="card" aria-labelledby="list-title">
+  <div class="section-head section-head--wrap">
+    <h2 id="list-title">{{ icon("files") }} Archivos <span class="count">{{ total }}</span></h2>
+    <form class="toolbar" method="get" action="{{ url_for('files.index') }}" role="search">
+      <label class="search">
+        {{ icon("search") }}
+        <span class="sr-only">Buscar archivos</span>
+        <input type="search" name="q" value="{{ q }}" placeholder="Buscar por nombre…">
+      </label>
+      <label class="sr-only" for="filtro-tipo">Tipo</label>
+      <select id="filtro-tipo" name="kind">
+        <option value="" {{ 'selected' if not kind }}>Todos los tipos</option>
+        <option value="text" {{ 'selected' if kind == 'text' }}>Texto editable</option>
+        <option value="image" {{ 'selected' if kind == 'image' }}>Imágenes</option>
+        <option value="other" {{ 'selected' if kind == 'other' }}>Otros</option>
+      </select>
+      <label class="sr-only" for="orden">Orden</label>
+      <select id="orden" name="sort">
+        <option value="updated" {{ 'selected' if sort == 'updated' }}>Más recientes</option>
+        <option value="name" {{ 'selected' if sort == 'name' }}>Nombre</option>
+        <option value="size" {{ 'selected' if sort == 'size' }}>Tamaño</option>
+        <option value="ver" {{ 'selected' if sort == 'ver' }}>Versión</option>
+      </select>
+      <label class="sr-only" for="sentido">Sentido</label>
+      <select id="sentido" name="order">
+        <option value="desc" {{ 'selected' if order == 'desc' }}>Descendente</option>
+        <option value="asc" {{ 'selected' if order == 'asc' }}>Ascendente</option>
+      </select>
+      <button class="btn btn--secondary btn--sm" type="submit">{{ icon("filter") }} Filtrar</button>
+      {% if q or kind %}
+      <a class="btn btn--ghost btn--sm" href="{{ url_for('files.index') }}">{{ icon("x") }} Limpiar</a>
+      {% endif %}
+    </form>
+  </div>
+
+  {% if files %}
+  <div class="table-wrap">
+    <table class="file-table">
+      <caption class="sr-only">Lista de archivos compartidos</caption>
+      <thead>
+        <tr>
+          <th scope="col">Archivo</th>
+          <th scope="col">Tamaño</th>
+          <th scope="col">Versión</th>
+          <th scope="col">Último cambio</th>
+          <th scope="col">Estado</th>
+          <th scope="col"><span class="sr-only">Acciones</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in files %}
+        <tr>
+          <td data-label="Archivo">
+            <div class="file-cell">
+              <span class="file-icon file-icon--{{ 'text' if f.is_text else ('image' if f.image else 'file') }}">
+                {{ icon("text" if f.is_text else ("image" if f.image else "file")) }}
+              </span>
+              <div class="file-cell__body">
+                <a class="file-cell__name" href="{{ url_for('files.view', file_id=f.id) }}">{{ f.name }}</a>
+                {% if f.missing %}<span class="badge badge--danger">faltante</span>{% endif %}
+                <span class="file-cell__meta">{{ f.mime or "application/octet-stream" }}</span>
+              </div>
+            </div>
+          </td>
+          <td data-label="Tamaño" class="nowrap">{{ f.size|tamano }}</td>
+          <td data-label="Versión"><span class="badge badge--soft">v{{ f.ver }}</span></td>
+          <td data-label="Último cambio">
+            <span class="nowrap">{{ f.author or "—" }}</span>
+            <span class="sub">{{ f.updated_at|fecha }}</span>
+          </td>
+          <td data-label="Estado">
+            {% if f.owner %}
+            <span class="badge badge--lock" title="Bloqueado para edición">
+              {{ icon("lock") }} {{ f.owner }}
+              {% if f.remaining %}<span class="badge__timer" data-lock-remaining="{{ f.remaining }}">{{ f.remaining }}s</span>{% endif %}
+            </span>
+            {% else %}
+            <span class="badge badge--ok">{{ icon("check") }} disponible</span>
+            {% endif %}
+          </td>
+          <td data-label="Acciones" class="row-actions">
+            <a class="btn btn--ghost btn--sm" href="{{ url_for('files.view', file_id=f.id) }}">
+              {{ icon("edit" if f.is_text and u.w else "eye") }}
+              <span>{{ "Editar" if f.is_text and u.w else "Abrir" }}</span>
+            </a>
+            <a class="btn btn--icon btn--sm" href="{{ url_for('files.download', file_id=f.id) }}"
+               aria-label="Descargar {{ f.name }}" title="Descargar">{{ icon("download") }}</a>
+
+            {% if u.w or u.d %}
+            <details class="menu">
+              <summary class="btn btn--icon btn--sm" aria-label="Más acciones para {{ f.name }}" title="Más acciones">
+                {{ icon("more") }}
+              </summary>
+              <div class="menu__panel">
+                <a class="menu__item" href="{{ url_for('files.download', file_id=f.id) }}">
+                  {{ icon("download") }} Descargar
+                </a>
+                {% if u.w and f.owner == u.name %}
+                <form action="{{ url_for('files.unlock', file_id=f.id) }}" method="post">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="menu__item" type="submit">{{ icon("unlock") }} Soltar bloqueo</button>
+                </form>
+                {% endif %}
+                {% if u.w %}
+                <form action="{{ url_for('files.rename', file_id=f.id) }}" method="post" class="menu__form">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <label class="sr-only" for="rename-{{ f.id }}">Nuevo nombre</label>
+                  <input id="rename-{{ f.id }}" name="name" value="{{ f.name }}" maxlength="120" required>
+                  <button class="btn btn--secondary btn--sm" type="submit">{{ icon("edit") }} Renombrar</button>
+                </form>
+                {% endif %}
+                {% if u.d %}
+                <form action="{{ url_for('files.delete', file_id=f.id) }}" method="post"
+                      data-confirm="¿Borrar «{{ f.name }}» y todas sus versiones?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="menu__item menu__item--danger" type="submit">{{ icon("trash") }} Borrar</button>
+                </form>
+                {% endif %}
+              </div>
+            </details>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pages > 1 %}
+  <nav class="pagination" aria-label="Paginación">
+    {% if page > 1 %}
+    <a class="btn btn--ghost btn--sm" href="{{ url_for('files.index', q=q, kind=kind, sort=sort, order=order, page=page-1) }}">
+      {{ icon("chevron-left") }} Anterior
+    </a>
+    {% else %}
+    <span class="btn btn--ghost btn--sm is-disabled">{{ icon("chevron-left") }} Anterior</span>
+    {% endif %}
+    <span class="pagination__info">Página {{ page }} de {{ pages }}</span>
+    {% if page < pages %}
+    <a class="btn btn--ghost btn--sm" href="{{ url_for('files.index', q=q, kind=kind, sort=sort, order=order, page=page+1) }}">
+      Siguiente {{ icon("chevron-right") }}
+    </a>
+    {% else %}
+    <span class="btn btn--ghost btn--sm is-disabled">Siguiente {{ icon("chevron-right") }}</span>
+    {% endif %}
+  </nav>
+  {% endif %}
+
+  {% else %}
+  <div class="empty-state">
+    {{ icon("folder-open", "empty-state__icon") }}
+    <h3>No hay archivos que mostrar</h3>
+    <p>
+      {% if q or kind %}
+      Prueba con otra búsqueda o quita los filtros.
+      {% elif u.w %}
+      Sube el primero con la zona de arriba.
+      {% else %}
+      Cuando alguien suba un archivo aparecerá aquí.
+      {% endif %}
+    </p>
+    {% if q or kind %}
+    <a class="btn btn--secondary" href="{{ url_for('files.index') }}">Quitar filtros</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/upload.js') }}" defer></script>
+{% endblock %}

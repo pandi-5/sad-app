@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}Acceso denegado · {{ app_name }}{% endblock %}
+{% block body %}
+<section class="narrow">
+  <div class="empty-state card">
+    {{ icon("shield", "empty-state__icon") }}
+    <h1>Acceso denegado</h1>
+    <p>{{ message or "No tienes permisos para esta operación. Pídeselos al coordinador." }}</p>
+    <div class="form-actions">
+      <a class="btn btn--primary" href="{{ url_for('files.index') }}">{{ icon("arrow-left") }} Volver</a>
+      {% if u %}<a class="btn btn--ghost" href="{{ url_for('auth.change_password') }}">{{ icon("key") }} Mi cuenta</a>{% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}
