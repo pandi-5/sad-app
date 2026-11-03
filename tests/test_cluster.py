@@ -136,11 +136,14 @@ def test_healthz_reports_node(app):
 def test_agent_effective_role_follows_exports(monkeypatch, tmp_path):
     share = str(tmp_path / "share")
     agent = load_agent(monkeypatch, tmp_path, "servidor-b", f"{share} 100.64.0.0/10(ro,sync)\n")
+    monkeypatch.setattr(agent, "run", lambda cmd, timeout=3: "active")
     assert agent.effective_role() == "replica"
     (tmp_path / "exports").write_text(f"{share} 100.64.0.0/10(rw,sync)\n")
     assert agent.effective_role() == "primario"
     (tmp_path / "exports").write_text("")
     assert agent.effective_role() == "sin-exportar"
+    monkeypatch.setattr(agent, "run", lambda cmd, timeout=3: "inactive")
+    assert agent.effective_role() == "detenido"
 
 
 def test_agent_heartbeat_age(monkeypatch, tmp_path):

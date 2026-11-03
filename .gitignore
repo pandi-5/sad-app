@@ -19,3 +19,5 @@ storage/*
 
 # Registros de los scripts de Windows
 logs/
+capturas/
+cola/

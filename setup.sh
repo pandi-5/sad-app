@@ -122,11 +122,11 @@ apt_install() {
   if [ "${#missing[@]}" -eq 0 ]; then ok "Paquetes ya instalados: $*"; return; fi
   if [ "$APT_UPDATED" -eq 0 ]; then
     info "Actualizando índice de paquetes..."
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >>"$LOG_FILE" 2>&1
     APT_UPDATED=1
   fi
   info "Instalando ${missing[*]}..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}" >/dev/null
+  NEEDRESTART_MODE=a DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}" >>"$LOG_FILE" 2>&1
   ok "Instalado ${missing[*]}"
 }
 
@@ -421,7 +421,7 @@ step_app() {
   write_credentials
   # B toma el SECRET y la clave de A para que la conmutación sea transparente.
   if [ "$role" = "servidor-b" ]; then
-    local tmp; tmp="$(mktemp)"
+    local tmp; tmp="$(mktemp)"; chmod 666 "$tmp"
     if as_user scp $SSH_OPTS -q "$LAB_USER@$(addr_of servidor-a):$APP_DIR/.env" "$tmp" 2>/dev/null; then
       for key in SECRET ADMIN_USER ADMIN_PASS; do
         v="$(grep "^$key=" "$tmp" | head -1 | cut -d= -f2- || true)"; [ -n "$v" ] && env_set "$key" "$v"
@@ -496,8 +496,8 @@ step_replicator() {
 #!/usr/bin/env bash
 # Copia la carpeta compartida y una instantánea de la base de datos a servidor-b.
 set -u
-. /etc/sad-lab/derived.conf
 . /etc/sad-lab/lab.conf
+. /etc/sad-lab/derived.conf
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new"
 state=""
 mkdir -p "$EXPORT_DIR/.cluster"
@@ -544,8 +544,8 @@ step_watchdog() {
 #!/usr/bin/env bash
 # Si servidor-a deja de responder y los testigos coinciden, B se promueve a primario.
 set -u
-. /etc/sad-lab/derived.conf
 . /etc/sad-lab/lab.conf
+. /etc/sad-lab/derived.conf
 LOG=/var/log/sad-lab.log
 say() { printf '%s [vigilante] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"; }
 
@@ -817,7 +817,7 @@ cmd_status() {
       "$(jq -r .effective_role <<<"$j")" \
       "$(jq -r .overlay.mode <<<"$j")" \
       "$(jq -r '.overlay.ip // "-"' <<<"$j")" \
-      "$(jq -r 'if .heartbeat_age == null then "-" else "\(.heartbeat_age)s" end' <<<"$j")" \
+      "$(jq -r 'if .heartbeat_age == null or .effective_role != "replica" then "-" else "\(.heartbeat_age)s" end' <<<"$j")" \
       "$(jq -r '[.services | to_entries[] | select(.value=="active") | .key] | join(",")' <<<"$j")"
   done
 }
@@ -875,13 +875,13 @@ cmd_test() {
 
   echo; info "Resultados guardados en $out"
   printf '     %d pruebas correctas, %d fallidas\n' "$pass" "$fail"
-  [ "$fail" -eq 0 ]
+  [ "$fail" -eq 0 ] || return 1
 }
 
 cmd_simulate_failure() {
   need_root "$@"; load_config
   step "Simulando la caída de servidor-a"
-  for s in sad-replicator sad-app nfs-server; do systemctl stop "$s" && ok "Detenido $s"; done
+  for s in sad-replicator sad-app nfs-server sad-agent; do systemctl stop "$s" && ok "Detenido $s"; done
   log_event "caída simulada de servidor-a"
   info "Los clientes y servidor-b lo notarán en unos segundos. Para volver, ejecuta ./setup.sh failback"
   if [ "${2:-}" = "--poweroff" ]; then info "Apagando el equipo"; systemctl poweroff; fi
@@ -922,7 +922,7 @@ PY
   ok "Archivos y base de datos copiados desde servidor-b"
   rsh servidor-b "sudo $APP_DIR/setup.sh demote" >/dev/null && ok "servidor-b vuelve a ser réplica"
   sed -i 's/^NODE_ROLE=.*/NODE_ROLE=primario/' "$APP_DIR/.env"
-  systemctl start nfs-server sad-app sad-replicator
+  systemctl start nfs-server sad-app sad-replicator sad-agent
   wait_for "sad-app responde" 25 curl -fsS "http://127.0.0.1:$APP_PORT/healthz" || true
   log_event "failback completado, servidor-a es primario"
   FAILS=0; validate_servidor_a; finish
@@ -934,7 +934,7 @@ main() {
 case "${1:-}" in
   servidor-a|servidor-b|cliente) cmd_install "$@" ;;
   status)            cmd_status "$@" ;;
-  test)              cmd_test "$@" ;;
+  test)              cmd_test "$@" || exit $? ;;
   simulate-failure)  cmd_simulate_failure "$@" ;;
   failback)          cmd_failback "$@" ;;
   demote)            cmd_demote "$@" ;;

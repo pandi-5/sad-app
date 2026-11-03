@@ -83,6 +83,8 @@ def exports() -> list[str]:
 def effective_role() -> str:
     if NODE_ROLE not in ("servidor-a", "servidor-b"):
         return "cliente" if NODE_ROLE == "cliente" else NODE_ROLE
+    if run(["systemctl", "is-active", "nfs-server"]) != "active":
+        return "detenido"
     for line in exports():
         if line.split()[0] == EXPORT_DIR:
             if "(rw," in line or "(rw)" in line:
@@ -106,7 +108,7 @@ def mounts() -> list[dict]:
     try:
         for line in open("/proc/mounts"):
             parts = line.split()
-            if len(parts) >= 4 and parts[2].startswith("nfs"):
+            if len(parts) >= 4 and parts[2] in ("nfs", "nfs4"):
                 opts = parts[3].split(",")
                 found.append({
                     "source": parts[0],

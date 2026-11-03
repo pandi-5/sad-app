@@ -2,7 +2,7 @@
 {% set s = snap.summary %}
 {% set state_label = {"ok": "Operativo", "degradado": "Degradado", "caido": "Sin primario", "local": "Nodo único"} %}
 {% set state_class = {"ok": "ok", "degradado": "warn", "caido": "danger", "local": "soft"} %}
-{% set role_label = {"primario": "primario", "replica": "réplica", "cliente": "cliente", "sin-exportar": "sin exportar"} %}
+{% set role_label = {"primario": "primario", "replica": "réplica", "cliente": "cliente", "sin-exportar": "sin exportar", "detenido": "detenido"} %}
 {% set overlay_label = {"sim": "simulada", "real": "Tailscale", "ninguna": "sin red privada"} %}
 
 <section class="stats" aria-label="Resumen del clúster">
@@ -36,7 +36,7 @@
         <span class="muted mono">{{ st.get("overlay", {}).get("ip") or n.url }}</span>
       </div>
       {% if n.up %}
-        <span class="badge badge--{{ 'ok' if role == 'primario' else 'accent' if role == 'replica' else 'soft' }}">{{ role_label.get(role, role) }}</span>
+        <span class="badge badge--{{ 'ok' if role == 'primario' else 'accent' if role == 'replica' else 'danger' if role == 'detenido' else 'soft' }}">{{ role_label.get(role, role) }}</span>
       {% else %}
         <span class="badge badge--danger">sin respuesta</span>
       {% endif %}

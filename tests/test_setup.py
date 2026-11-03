@@ -127,3 +127,12 @@ def test_embedded_scripts_have_valid_syntax(tmp_path):
         path.write_text(block + "\n")
         result = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
         assert result.returncode == 0, f"{block[:60]!r}: {result.stderr}"
+
+
+def test_embedded_scripts_load_derived_after_lab_conf():
+    """lab.conf deja LAB_USER vacío. derived.conf debe leerse después para que no lo pise."""
+    text = (ROOT / "setup.sh").read_text()
+    for name in ("replicate.sh", "watchdog.sh"):
+        start = text.index(f"{name} 755")
+        block = text[start:start + 700]
+        assert block.index("lab.conf") < block.index("derived.conf"), name
