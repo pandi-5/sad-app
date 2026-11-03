@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "partials/icon.html" import icon %}
+{% block title %}Clúster · {{ app_name }}{% endblock %}
+
+{% block body %}
+<div class="page-head">
+  <div>
+    <span class="eyebrow">{{ icon("network") }} Infraestructura</span>
+    <h1>Estado del clúster</h1>
+    <p class="muted">Rol de cada servidor, retraso de la réplica y servicios activos. Se actualiza solo.</p>
+  </div>
+  <div class="page-head__side">
+    <span class="live" data-live-indicator><span class="live__dot"></span> En vivo</span>
+    <a class="btn btn--ghost btn--sm" href="{{ url_for('files.index') }}">{{ icon("files") }} Ver archivos</a>
+  </div>
+</div>
+
+<div id="cluster-live" data-fragment-url="{{ url_for('cluster.fragment') }}">
+  {% include "cluster/_nodes.html" %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/cluster.js') }}" defer></script>
+{% endblock %}

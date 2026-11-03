@@ -1,0 +1,83 @@
+{% from "partials/icon.html" import icon %}
+{% set s = snap.summary %}
+{% set state_label = {"ok": "Operativo", "degradado": "Degradado", "caido": "Sin primario", "local": "Nodo único"} %}
+{% set state_class = {"ok": "ok", "degradado": "warn", "caido": "danger", "local": "soft"} %}
+{% set role_label = {"primario": "primario", "replica": "réplica", "cliente": "cliente", "sin-exportar": "sin exportar", "detenido": "detenido"} %}
+{% set overlay_label = {"sim": "simulada", "real": "Tailscale", "ninguna": "sin red privada"} %}
+
+<section class="stats" aria-label="Resumen del clúster">
+  <div class="stat card">
+    <span class="stat__value"><span class="badge badge--{{ state_class[s.state] }} badge--lg">{{ state_label[s.state] }}</span></span>
+    <span class="stat__label">{{ icon("activity") }} estado general</span>
+  </div>
+  <div class="stat card">
+    <span class="stat__value">{{ s.primary or "—" }}</span>
+    <span class="stat__label">{{ icon("server") }} servidor primario</span>
+  </div>
+  <div class="stat card">
+    <span class="stat__value">{% if s.replica_lag is not none %}{{ "%.1f"|format(s.replica_lag) }}<small> s</small>{% else %}—{% endif %}</span>
+    <span class="stat__label">{{ icon("clock") }} retraso de la réplica</span>
+  </div>
+  <div class="stat card">
+    <span class="stat__value">{{ s.nodes_up }}<small>/{{ s.nodes_total }}</small></span>
+    <span class="stat__label">{{ icon("network") }} nodos en línea</span>
+  </div>
+</section>
+
+<section class="node-grid" aria-label="Nodos">
+  {% for n in snap.nodes %}
+  {% set st = n.status or {} %}
+  {% set role = st.get("effective_role") %}
+  <article class="card node {{ 'is-down' if not n.up }}">
+    <header class="node__head">
+      <span class="node__icon">{{ icon("server") }}</span>
+      <div class="node__title">
+        <h2>{{ n.name }}</h2>
+        <span class="muted mono">{{ st.get("overlay", {}).get("ip") or n.url }}</span>
+      </div>
+      {% if n.up %}
+        <span class="badge badge--{{ 'ok' if role == 'primario' else 'accent' if role == 'replica' else 'danger' if role == 'detenido' else 'soft' }}">{{ role_label.get(role, role) }}</span>
+      {% else %}
+        <span class="badge badge--danger">sin respuesta</span>
+      {% endif %}
+    </header>
+
+    {% if n.up %}
+    <dl class="node__facts">
+      <div><dt>Red privada</dt><dd>{{ overlay_label.get(st.overlay.mode, st.overlay.mode) }}{% if st.overlay.interface %} · <span class="mono">{{ st.overlay.interface }}</span>{% endif %}</dd></div>
+      <div><dt>Latencia</dt><dd>{{ n.latency_ms }} ms</dd></div>
+      {% if st.heartbeat_age is not none and role == "replica" %}
+      <div><dt>Retraso de réplica</dt><dd>{{ "%.1f"|format(st.heartbeat_age) }} s</dd></div>
+      {% endif %}
+      {% if st.exports %}
+      <div><dt>Exportación</dt><dd class="mono">{{ st.exports[0].split()[0] }} · {{ "lectura y escritura" if role == "primario" else "solo lectura" }}</dd></div>
+      {% endif %}
+      {% for m in st.mounts %}
+      <div><dt>Montaje</dt><dd class="mono">{{ m.source }} · {{ "lectura" if m.mode == "ro" else "escritura" }}</dd></div>
+      {% endfor %}
+      {% if st.promoted %}
+      <div><dt>Promoción</dt><dd><span class="badge badge--warn">promovido tras una caída</span></dd></div>
+      {% endif %}
+    </dl>
+    <ul class="svc">
+      {% for name, state in st.services.items() %}
+      <li class="svc__item svc__item--{{ 'on' if state == 'active' else 'off' }}"><span class="svc__dot"></span>{{ name }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted node__error">No responde el agente de estado. {{ n.error or "" }}</p>
+    {% endif %}
+  </article>
+  {% else %}
+  <article class="card node">
+    <header class="node__head">
+      <span class="node__icon">{{ icon("server") }}</span>
+      <div class="node__title"><h2>{{ snap.node.name }}</h2><span class="muted mono">{{ snap.node.host }}</span></div>
+      <span class="badge badge--soft">{{ snap.node.role }}</span>
+    </header>
+    <p class="muted">Este nodo no tiene otros nodos configurados. Para ver el clúster completo define <span class="mono">CLUSTER_NODES</span> en el archivo de entorno.</p>
+  </article>
+  {% endfor %}
+</section>
+
+<p class="hint">Atiende esta página <strong>{{ snap.node.name }}</strong> · modo de concurrencia {{ snap.node.mode }} · {{ snap.node.files }} archivos · {{ snap.node.users_online }} usuarios conectados.</p>

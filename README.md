@@ -158,6 +158,7 @@ app/
   admin.py           panel del coordinador
   utils.py           nombres, hashes, texto, instantáneas y diffs
   audit.py           registro de auditoría
+  cluster.py         página y API del estado del clúster
 templates/           Jinja: acceso, archivos, editor, panel y errores
 static/              CSS, JavaScript e iconos locales
 tests/               suite de pytest
@@ -165,9 +166,70 @@ data/                SQLite (se crea al arrancar)
 storage/files/       archivos actuales
 storage/versions/    instantáneas de versiones
 storage/tmp/         temporales de subida y respaldo
+cluster/agent.py     agente de estado de cada nodo
+deploy/              plantilla de configuración y scripts de Windows
+setup.sh             despliegue único por rol
 wsgi.py              entrada para gunicorn
 run.py               servidor de desarrollo
 ```
+
+## Laboratorio distribuido con réplica
+
+Además de la web, el repositorio incluye un despliegue de cuatro nodos para estudiar
+sistemas de archivos distribuidos. Se instala con un solo script, `setup.sh`.
+
+```text
+  cliente-1 ─┐                              ┌─ servidor-a  primario, NFS lectura y escritura, sad-app
+             ├─ red privada 100.64.0.0/10 ──┤        │ rsync cada 2 s, latido y base de datos
+  cliente-2 ─┘                              └─ servidor-b  réplica, NFS solo lectura, vigilante
+```
+
+| Rol | Qué hace |
+| --- | --- |
+| `servidor-a` | Exporta `/srv/compartido` por NFS, ejecuta `sad-app` con su almacenamiento en la carpeta compartida y replica hacia B. |
+| `servidor-b` | Recibe la réplica. Su vigilante promueve a B si A cae y los testigos, los clientes, confirman la caída. |
+| `cliente` | Monta la carpeta desde el servidor que esté vivo y vuelve a montar solo si cambia el primario. |
+
+### Uso
+
+```bash
+git clone https://github.com/pandi-5/sad-app ~/sad-app && cd ~/sad-app
+sudo ./setup.sh servidor-a      # en la máquina A
+sudo ./setup.sh servidor-b      # en la máquina B
+sudo ./setup.sh cliente 1       # en el cliente 1
+sudo ./setup.sh cliente 2       # en el cliente 2
+```
+
+Ejecútalo una segunda vez en cada máquina cuando las demás estén listas, para cerrar
+las llaves SSH pendientes. El script se puede repetir sin dañar nada. Al terminar valida
+el nodo y muestra una marca por cada comprobación.
+
+| Comando | Para qué sirve |
+| --- | --- |
+| `./setup.sh status` | Rol, red, retraso y servicios de los cuatro nodos. |
+| `./setup.sh test` | Desde un cliente. Acceso compartido, concurrencia con y sin bloqueo, y retraso de la réplica. |
+| `./setup.sh simulate-failure` | En A. Detiene NFS, la web y el replicador. B se promueve solo. |
+| `./setup.sh failback` | En A. Trae lo escrito en B, devuelve B a réplica y retoma el servicio. |
+
+La configuración está en `/etc/sad-lab/lab.conf`, plantilla en `deploy/lab.conf.example`.
+
+### Red privada, real o simulada
+
+`OVERLAY_MODE=real` instala Tailscale y une el nodo a la red. `OVERLAY_MODE=sim` crea la
+interfaz `tssim0` con direcciones del rango 100.64.0.0/10 y rutas hacia los demás nodos.
+Sirve cuando las máquinas virtuales comparten un solo equipo físico. Es una simulación
+y no debe presentarse como Tailscale real. `OVERLAY_MODE=none` usa las direcciones LAN.
+
+### Máquinas virtuales en Windows
+
+`deploy/windows/crear-vms.ps1` crea las cuatro VM en VirtualBox con Ubuntu Server de forma
+desatendida, y `deploy/windows/desplegar.ps1` copia el proyecto y ejecuta `setup.sh` en cada una.
+
+### Vista de clúster en la web
+
+La web incluye la página `/cluster` y la API `/api/cluster`. Muestran el rol de cada servidor,
+el retraso de la réplica y los servicios activos, y avisan en pantalla cuando el servidor actual
+deja de responder. Cada nodo ejecuta un agente de estado, `cluster/agent.py`, en el puerto 5100.
 
 ## Desarrollo
 

@@ -1,0 +1,55 @@
+# Configuración del laboratorio de archivos distribuidos.
+# setup.sh la copia a /etc/sad-lab/lab.conf la primera vez. Edítala allí.
+# Todos los nodos deben usar los mismos valores.
+
+# Usuario Linux que usa el laboratorio en todas las máquinas.
+# Si se deja vacío se usa el usuario que ejecuta setup.sh con sudo.
+LAB_USER=""
+
+# ---------- Red real entre las máquinas ----------
+# Direcciones fijas de la segunda tarjeta de red, la de solo anfitrión de VirtualBox.
+LAN_A=192.168.56.11
+LAN_B=192.168.56.12
+LAN_C1=192.168.56.21
+LAN_C2=192.168.56.22
+LAN_CIDR=24
+# yes configura la IP fija con netplan en la segunda tarjeta. no la deja como está.
+LAN_CONFIGURE=yes
+
+# ---------- Red privada superpuesta ----------
+# sim   Simula Tailscale. Crea la interfaz tssim0 con direcciones del rango
+#       100.64.0.0/10 y rutas hacia los demás nodos. Sirve cuando las máquinas
+#       virtuales comparten un mismo equipo físico. No es Tailscale real.
+# real  Instala Tailscale y une el nodo a tu red. Define TS_AUTHKEY o autoriza
+#       el nodo con el enlace que imprime tailscale up.
+# none  No usa red superpuesta. Los nodos se hablan por las direcciones LAN.
+OVERLAY_MODE=sim
+OV_A=100.64.0.11
+OV_B=100.64.0.12
+OV_C1=100.64.0.21
+OV_C2=100.64.0.22
+TS_AUTHKEY=""
+
+# ---------- Carpeta compartida ----------
+EXPORT_DIR=/srv/compartido
+MOUNT_DIR=/mnt/compartido
+
+# ---------- Aplicación web ----------
+APP_PORT=5000
+AGENT_PORT=5100
+ADMIN_USER=coordinador
+# Vacío genera una contraseña aleatoria que se guarda en /etc/sad-lab/credenciales.txt
+ADMIN_PASS=""
+# Usuarios de prueba con permiso de lectura y escritura, formato usuario:clave separados por comas.
+SEED_USERS="cliente1:ClaveCliente123,cliente2:ClaveCliente456"
+
+# ---------- Réplica y conmutación ----------
+REPL_INTERVAL=2
+# Fallos seguidos de A antes de que B consulte a los testigos.
+WATCH_FAILS=3
+
+# ---------- Comodidad de laboratorio ----------
+# Clave SSH del usuario del laboratorio, solo para intercambiar llaves entre nodos.
+SSH_PASSWORD=""
+# yes permite sudo sin contraseña al usuario del laboratorio, necesario para failback.
+SUDO_NOPASSWD=yes

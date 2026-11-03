@@ -8,6 +8,7 @@ un entorno de desarrollo.
 from __future__ import annotations
 
 import os
+import socket
 from datetime import timedelta
 from pathlib import Path
 
@@ -79,6 +80,20 @@ def env_int(name: str, default: int, minimum: int = 1) -> int:
     return max(minimum, value)
 
 
+def parse_nodes(raw: str) -> list[dict]:
+    """Convierte 'nombre=http://ip:5100,otro=http://ip2:5100' en una lista."""
+    nodes: list[dict] = []
+    for chunk in (raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        name, url = chunk.split("=", 1)
+        name, url = name.strip(), url.strip().rstrip("/")
+        if name and url.startswith(("http://", "https://")):
+            nodes.append({"name": name, "url": url})
+    return nodes
+
+
 def build_config() -> dict:
     max_upload_mb = env_int("MAX_UPLOAD_MB", 25)
     max_text_kb = env_int("MAX_TEXT_KB", 512)
@@ -118,6 +133,12 @@ def build_config() -> dict:
         "LOGIN_MAX_ATTEMPTS": env_int("LOGIN_MAX_ATTEMPTS", 5),
         "LOGIN_WINDOW": env_int("LOGIN_WINDOW", 900),
         "PASSWORD_MIN_LENGTH": env_int("PASSWORD_MIN_LENGTH", 8),
+        # Clúster
+        "NODE_NAME": os.getenv("NODE_NAME", "").strip() or socket.gethostname(),
+        "NODE_ROLE": os.getenv("NODE_ROLE", "autonomo").strip().lower() or "autonomo",
+        "CLUSTER_NODES": parse_nodes(os.getenv("CLUSTER_NODES", "")),
+        "CLUSTER_TIMEOUT": float(os.getenv("CLUSTER_TIMEOUT", "1.5") or 1.5),
+        "PEER_WEB_URL": os.getenv("PEER_WEB_URL", "").strip().rstrip("/"),
         # Rutas
         "DB_PATH": db_path,
         "STORAGE_DIR": storage_dir,
