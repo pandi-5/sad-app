@@ -58,11 +58,12 @@ def create_app(test_config: dict | None = None) -> Flask:
     init_db_app(app)
     install_security(app)
 
-    from . import admin, auth, files
+    from . import admin, auth, cluster, files
 
     app.register_blueprint(auth.bp)
     app.register_blueprint(files.bp)
     app.register_blueprint(admin.bp)
+    app.register_blueprint(cluster.bp)
 
     @app.template_filter("hora")
     def hora_filter(ts):
@@ -103,6 +104,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             "lock_ttl": app.config["LOCK_TTL"],
             "online_window": app.config["ONLINE_WINDOW"],
             "app_name": "Archivos compartidos",
+            "node_name": app.config["NODE_NAME"],
+            "node_role": app.config["NODE_ROLE"],
+            "peer_web_url": app.config["PEER_WEB_URL"],
         }
 
     @app.get("/healthz")
@@ -111,7 +115,12 @@ def create_app(test_config: dict | None = None) -> Flask:
             get_db().execute("SELECT 1").fetchone()
         except Exception:
             return jsonify(status="error"), 503
-        return jsonify(status="ok", mode=get_mode())
+        return jsonify(
+            status="ok",
+            mode=get_mode(),
+            node=app.config["NODE_NAME"],
+            role=app.config["NODE_ROLE"],
+        )
 
     @app.get("/favicon.ico")
     def favicon():

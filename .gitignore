@@ -16,3 +16,6 @@ storage/*
 
 *.bak
 *.bak-*
+
+# Registros de los scripts de Windows
+logs/
