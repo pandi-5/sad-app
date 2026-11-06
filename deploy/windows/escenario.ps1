@@ -9,7 +9,8 @@
   Caida2    cae también servidor-b, asume servidor-c. Muestra la sucesión.
   Failback  servidor-a recupera el servicio y los demás vuelven a réplica.
   Las etapas se leen de escenario-etapas.txt, una por línea. Si no existe se hacen todas.
-  A los clientes WSL se llega desde servidor-a por Tailscale, ver Remoto en comun.ps1.
+  Se ejecuta en el computador que tiene la VM de servidor-a. A los demás nodos se llega
+  desde esa VM por Tailscale, ver Remoto en comun.ps1. Con otra VM usa  set SAD_PROPIO=servidor-x
 #>
 . (Join-Path $PSScriptRoot "comun.ps1")
 try { Start-Transcript -Path (Join-Path $script:LogDir ("escenario-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))) | Out-Null } catch { Write-Host "No se pudo iniciar el registro, se continúa sin él." }
@@ -20,15 +21,15 @@ Write-Host "Etapas a ejecutar: $($etapas -join ', ')" -ForegroundColor Cyan
 $S = $script:Setup
 $adminPass = (Remoto "servidor-a" "sudo cat /etc/sad-lab/credenciales.txt").Out | Select-String "clave=(\S+)" | ForEach-Object { $_.Matches.Groups[1].Value } | Select-Object -First 1
 
-# Las capturas de la web se toman con un navegador sin pantalla en servidor-d.
+# Las capturas de la web se toman con un navegador sin pantalla en la VM propia.
 function CapturasWeb([string]$base, [string]$prefijo) {
   Write-Host "`n== Capturas de la web hacia $base ==" -ForegroundColor Cyan
-  $r = Remoto "servidor-d" "test -x ~/pw/bin/python || { python3 -m venv ~/pw && ~/pw/bin/pip install -q playwright && sudo ~/pw/bin/playwright install --with-deps chromium; } 2>&1 | tail -3; echo listo-playwright"
+  $r = Remoto $script:Propio "test -x ~/pw/bin/python || { python3 -m venv ~/pw && ~/pw/bin/pip install -q playwright && sudo ~/pw/bin/playwright install --with-deps chromium; } 2>&1 | tail -3; echo listo-playwright"
   $r.Out | Select-Object -Last 4 | ForEach-Object { Write-Host $_ }
-  & scp @($script:SshOpts) -P (PortDe "servidor-d") (Join-Path $script:Repo "deploy\capturas_web.py") "$($script:User)@127.0.0.1:/tmp/capturas_web.py" 2>&1 | Out-Null
-  $r = Remoto "servidor-d" "rm -rf ~/capturas-web && ~/pw/bin/python /tmp/capturas_web.py $base ~/capturas-web $prefijo $adminPass 2>&1 | tail -15" -Log "capturas-web-$prefijo.log"
+  & scp @($script:SshOpts) -P (PortDe $script:Propio) (Join-Path $script:Repo "deploy\capturas_web.py") "$($script:User)@127.0.0.1:/tmp/capturas_web.py" 2>&1 | Out-Null
+  $r = Remoto $script:Propio "rm -rf ~/capturas-web && ~/pw/bin/python /tmp/capturas_web.py $base ~/capturas-web $prefijo $adminPass 2>&1 | tail -15" -Log "capturas-web-$prefijo.log"
   $r.Out | ForEach-Object { Write-Host $_ }
-  & scp @($script:SshOpts) -P (PortDe "servidor-d") "$($script:User)@127.0.0.1:~/capturas-web/*.png" $script:CapDir 2>&1 | Out-Null
+  & scp @($script:SshOpts) -P (PortDe $script:Propio) "$($script:User)@127.0.0.1:~/capturas-web/*.png" $script:CapDir 2>&1 | Out-Null
 }
 
 function EsperarPrimario([string]$nodo, [int]$segundos = 60) {

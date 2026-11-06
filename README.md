@@ -265,6 +265,29 @@ muestra una marca por cada comprobación.
 La configuración queda en `/etc/sad-lab/lab.conf` y el proyecto en `/opt/sad-app` en
 todos los nodos.
 
+### Despliegue distribuido entre los cuatro integrantes
+
+Cada integrante pone una VM servidora en su computador, y tres de ellos además un cliente
+en WSL. Todos los nodos se unen a la misma red de Tailscale con la misma llave, así que se
+ven entre sí aunque estén en casas distintas.
+
+| Integrante | VM de VirtualBox | WSL |
+| --- | --- | --- |
+| 1 | `servidor-a` | `cliente-1` |
+| 2 | `servidor-b` | `cliente-2` |
+| 3 | `servidor-c` | `cliente-3` |
+| 4 | `servidor-d` | — |
+
+Cada uno, en su computador:
+
+1. Clona el repo fuera de OneDrive y pone el mismo `deploy\lab.conf` que los demás.
+2. Si tiene cliente, ejecuta `deploy\windows\cliente-wsl.cmd` con su número.
+3. Ejecuta `deploy\windows\servidor-vm.cmd` con su letra. Crea la VM, si hace falta, y la instala.
+4. Cuando todos estén unidos, repite los dos scripts una vez para cerrar las llaves SSH.
+
+Los clientes van primero porque forman etcd. Las capturas del escenario se toman desde el
+computador que tiene `servidor-a`. Con otra VM, antes de correrlo: `set SAD_PROPIO=servidor-x`.
+
 ### Lo que no se hizo y por qué
 
 La réplica síncrona por bloques con DRBD no se incluyó. Necesita un disco virtual extra en
@@ -302,6 +325,7 @@ y no debe presentarse como Tailscale real. `OVERLAY_MODE=none` usa las direccion
 
 | Script | Para qué sirve |
 | --- | --- |
+| `deploy/windows/servidor-vm.cmd` | En el computador de cada integrante. Crea su VM servidora y la instala. |
 | `deploy/windows/2-crear-vms.cmd` | Crea las cuatro VM servidoras en VirtualBox con Ubuntu Server de forma desatendida, 1,5 GB de RAM cada una. |
 | `deploy/windows/3-desplegar.cmd` | Copia el proyecto y `deploy/lab.conf` a los servidores y ejecuta `setup.sh` en cada uno. |
 | `deploy/windows/cliente-wsl.cmd` | En el computador de cada integrante. Deja WSL encendido e instala el cliente dentro de WSL. |

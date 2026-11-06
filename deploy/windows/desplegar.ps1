@@ -62,6 +62,7 @@ foreach ($pasada in 1..$Pasadas) {
 }
 Write-Host "`n########## Resumen ##########"
 if ($fallos.Count -eq 0) { Write-Host "Todas las ejecuciones terminaron bien." -ForegroundColor Green }
-else { Write-Host ("Fallaron: " + ($fallos -join ", ")) -ForegroundColor Red }
+else { Write-Host ("Fallaron: " + ($fallos -join ", ")) -ForegroundColor Red; $script:Salida = 1 }
 Write-Host "Siguiente paso: vuelve a ejecutar deploy\windows\cliente-wsl.cmd en cada computador con WSL para cerrar las llaves SSH."
 try { Stop-Transcript | Out-Null } catch { }
+if ($script:Salida) { exit 1 }

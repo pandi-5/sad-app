@@ -14,19 +14,23 @@ $script:Nodos  = @(
   @{ Host = "servidor-c"; Port = 2203; Arg = "servidor-c" },
   @{ Host = "servidor-d"; Port = 2204; Arg = "servidor-d" }
 )
-# Clientes, máquinas WSL de cada integrante. Se llega a ellos por Tailscale saltando desde servidor-a.
+# Clientes, máquinas WSL de cada integrante.
 $script:Clientes = @("cliente-1", "cliente-2", "cliente-3")
+# Servidor que corre en ESTE computador. Cada integrante tiene solo una VM, así que a
+# los demás nodos se llega saltando desde ella por Tailscale como sadlab.
+# Se cambia con la variable de entorno SAD_PROPIO, por ejemplo  set SAD_PROPIO=servidor-b
+$script:Propio = if ($env:SAD_PROPIO) { $env:SAD_PROPIO } else { "servidor-a" }
 $script:Setup = "sudo /opt/sad-app/setup.sh"
 $script:SshOpts = @("-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL","-o","LogLevel=ERROR","-o","BatchMode=yes","-o","ConnectTimeout=8")
 function PortDe($host_) { ($script:Nodos | Where-Object { $_.Host -eq $host_ }).Port }
 
 # ---------- ejecución remota ----------
 function Remoto([string]$nodo, [string]$cmd, [switch]$Tty, [string]$Log = "") {
-  if ($script:Clientes -contains $nodo) {
-    # El cliente no tiene puerto local. Se ejecuta desde servidor-a como sadlab por Tailscale.
+  if ($nodo -ne $script:Propio) {
+    # El nodo está en otro computador. Se ejecuta desde la VM propia como sadlab por Tailscale.
     $q = $cmd -replace "'", "'\''"
     $cmd = "sudo -u sadlab ssh -tt -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new sadlab@$nodo '$q'"
-    $nodo = "servidor-a"
+    $nodo = $script:Propio
   }
   $port = PortDe $nodo
   $args_ = @() + $script:SshOpts
