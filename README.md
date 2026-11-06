@@ -180,37 +180,56 @@ sistemas de archivos distribuidos: cuatro servidores y tres clientes unidos por 
 Se instala con un solo script, `setup.sh`.
 
 ```text
-                         red privada Tailscale 100.64.0.0/10
-  cliente-1 (WSL) ─┐                                   ┌─ servidor-a  primario, NFS lectura y escritura, sad-app
-  cliente-2 (WSL) ─┼── montan NFS del primario ────────┼─ servidor-b  réplica, primera en la sucesión
-  cliente-3 (WSL) ─┘   y votan como testigos           ├─ servidor-c  réplica, segunda en la sucesión
-                                                       └─ servidor-d  réplica, tercera en la sucesión
-               el primario copia con rsync cada 2 s a las tres réplicas, con latido y base de datos
+                          red privada Tailscale 100.64.0.0/10
+  cliente-1 (WSL) ─┐  etcd ─ Raft ─ etcd ─ Raft ─ etcd   ┌─ servidor-a ┐
+  cliente-2 (WSL) ─┼─ escriben en el primario ───────────┼─ servidor-b ├─ uno es el primario
+  cliente-3 (WSL) ─┘  leen de la réplica más cercana ────┼─ servidor-c │  los demás, réplicas
+                                                         └─ servidor-d ┘
+           el primario copia a las réplicas apenas cambia un archivo, con latido y base de datos
 ```
 
 | Rol | Dónde corre | Qué hace |
 | --- | --- | --- |
-| `servidor-a` a `servidor-d` | VM de VirtualBox con Ubuntu Server | Exportan `/srv/compartido` por NFS. El primario lo exporta con escritura, ejecuta `sad-app` y replica hacia los demás. Las réplicas lo exportan en solo lectura y vigilan. |
-| `cliente 1` a `cliente 3` | WSL en el computador de cada integrante | Montan la carpeta desde el servidor que esté vivo, vuelven a montar si cambia el primario y responden como testigos. |
+| `servidor-a` a `servidor-d` | VM de VirtualBox con Ubuntu Server | Exportan `/srv/compartido` por NFS. El primario lo exporta con escritura, ejecuta `sad-app` y replica hacia los demás. Las réplicas lo exportan en solo lectura y atienden lecturas. |
+| `cliente 1` a `cliente 3` | WSL en el computador de cada integrante | Forman el clúster etcd. Montan `/mnt/compartido` con escritura desde el primario y `/mnt/lectura` en solo lectura desde la réplica más cercana. |
 
 Los servidores van en máquinas virtuales porque el kernel de WSL no trae el servidor NFS.
 Los clientes sí pueden ir en WSL.
 
-### Sucesión y testigos
+### Consenso, contrato y fencing
 
-Cada servidor ejecuta un vigilante. Si una réplica no encuentra un primario vivo durante
-`WATCH_FAILS` comprobaciones seguidas:
+Quién es el primario lo decide etcd, que replica sus datos con el algoritmo de consenso
+Raft entre los tres clientes. Mientras dos de los tres respondan, etcd funciona.
 
-1. Si algún servidor anterior en la sucesión sigue vivo, espera, porque le toca a él.
-2. Si todos los anteriores están caídos, pregunta a los tres testigos si los ven.
-3. Asume como primario solo si ningún testigo los ve y al menos `WITNESS_QUORUM`, por
-   defecto la mayoría, confirma la caída. Si algún testigo todavía los ve, el problema puede
-   ser su propia red y no hace nada.
+1. **Elección.** Cada servidor ejecuta `sad-elector` (`cluster/elector.py`). El primario es
+   quien logra crear la llave `/sad-lab/primario` en etcd. La creación es atómica, así que
+   solo uno puede ganar.
+2. **Contrato.** La llave vive atada a un contrato (lease) de `LEASE_TTL` segundos que el
+   primario renueva cada segundo. Si el primario se cae, deja de renovar, el contrato vence
+   y otro servidor asume.
+3. **Fencing.** Si el primario queda aislado de la mayoría de etcd, no puede renovar. A un
+   tercio del plazo se pone solo en solo lectura, antes de que el contrato venza y otro
+   pueda asumir. Así nunca hay dos servidores aceptando escrituras.
+4. **Época.** La revisión de etcd en que se creó la llave es la época del primario. Siempre
+   crece, viaja en el latido de la réplica y sirve como ficha de fencing.
+5. **Datos al día.** Solo se postula el último primario o una réplica cuyo latido trae la
+   época del último primario. Un servidor que estuvo caído no vuelve a mandar con datos viejos.
+6. **Sucesión.** El último primario va primero y después el orden de `SERVERS`. Cada servidor
+   espera `RANK_DELAY` segundos por cada puesto que tiene delante.
 
-Al asumir, exporta con escritura, restaura la última copia de la base de datos, arranca
-`sad-app` y empieza a replicar hacia las demás réplicas. Cada primario guarda la hora en que
-asumió, su época. Si dos servidores llegan a creerse primarios, cede el de época más vieja,
-y mientras haya dos primarios nadie replica, para no pisar datos buenos con datos viejos.
+Si se apagan dos de los tres clientes, etcd pierde la mayoría, nadie puede ser primario y
+la carpeta queda en solo lectura. Es la decisión del teorema CAP: ante una partición, el
+sistema prefiere consistencia antes que aceptar escrituras que podrían perderse.
+
+### Réplica y lecturas
+
+El replicador ya no espera un intervalo fijo. `inotify` lo despierta apenas cambia un
+archivo y copia con `rsync` a las tres réplicas en paralelo, así el retraso queda por debajo
+de un segundo. La réplica sigue siendo asíncrona: el primario no espera a que las réplicas
+confirmen.
+
+Cada cliente monta además `/mnt/lectura` en solo lectura desde la réplica con menor latencia.
+Las lecturas se reparten entre las réplicas y el primario atiende las escrituras.
 
 ### Uso
 
@@ -219,31 +238,39 @@ Todos los nodos deben tener el mismo `deploy/lab.conf`. Créalo a partir de
 `SSH_PASSWORD` con una clave para el usuario común `sadlab`.
 
 ```bash
-# en cada servidor, primero servidor-a
+# primero los clientes, que forman etcd. Con dos ya hay mayoría.
+sudo ./setup.sh cliente 1
+sudo ./setup.sh cliente 2
+sudo ./setup.sh cliente 3
+# después los servidores, primero servidor-a
 sudo ./setup.sh servidor-a
 sudo ./setup.sh servidor-b
 sudo ./setup.sh servidor-c
 sudo ./setup.sh servidor-d
-# en cada cliente WSL
-sudo ./setup.sh cliente 1
-sudo ./setup.sh cliente 2
-sudo ./setup.sh cliente 3
 ```
 
-Ejecútalo una segunda vez en cada servidor cuando los clientes estén listos, para cerrar
-las llaves SSH pendientes. El script se puede repetir sin dañar nada. Al terminar valida
-el nodo y muestra una marca por cada comprobación.
+Ejecútalo una segunda vez en cada nodo cuando todos estén listos, para cerrar las llaves
+SSH pendientes. El script se puede repetir sin dañar nada. Al terminar valida el nodo y
+muestra una marca por cada comprobación.
 
 | Comando | Para qué sirve |
 | --- | --- |
-| `./setup.sh doctor` | Diagnóstico de este equipo y tabla de los siete nodos con ping, SSH, agente y desfase del reloj. |
-| `./setup.sh status` | Rol, red, retraso y servicios de los siete nodos. |
-| `./setup.sh test` | Desde un cliente. Acceso compartido, concurrencia de los tres clientes con y sin bloqueo, y retraso hacia cada réplica. |
-| `./setup.sh simulate-failure` | En el primario. Lo detiene y el siguiente de la sucesión asume. |
-| `./setup.sh failback` | En el servidor que debe volver a ser primario. Trae lo escrito en el primario actual, lo devuelve a réplica y retoma el servicio. |
+| `./setup.sh doctor` | Diagnóstico de este equipo, estado de etcd y tabla de los siete nodos con ping, SSH, agente y desfase del reloj. |
+| `./setup.sh status` | Primario, época, miembros de etcd y estado de los siete nodos. |
+| `./setup.sh test` | Desde un cliente. Acceso compartido, concurrencia de los tres clientes con y sin bloqueo, retraso hacia cada réplica y lectura desde la réplica. |
+| `./setup.sh simulate-failure` | En el primario. Lo detiene sin soltar el contrato y otro servidor asume. |
+| `./setup.sh failback` | En el servidor que debe volver a ser primario. Reserva el puesto en etcd, pide al primario actual que ceda, trae sus datos y gana la elección. |
+| `python3 /opt/sad-app/cluster/elector.py status` | Primario, época, reserva, miembros de etcd y líder de Raft. |
 
 La configuración queda en `/etc/sad-lab/lab.conf` y el proyecto en `/opt/sad-app` en
 todos los nodos.
+
+### Lo que no se hizo y por qué
+
+La réplica síncrona por bloques con DRBD no se incluyó. Necesita un disco virtual extra en
+cada VM, un módulo del kernel y DRBD 9 para más de dos nodos, y reemplaza por completo el
+modelo de carpeta replicada con rsync. Con el replicador por inotify el retraso ya es menor
+a un segundo, y la pérdida posible ante una caída queda en ese margen.
 
 ### Problemas de la primera prueba con Tailscale real y cómo quedaron resueltos
 
@@ -262,6 +289,7 @@ todos los nodos.
 | Archivos editados en Windows con CRLF rompían `setup.sh` y `lab.conf`. | `.gitattributes` fuerza LF, los scripts de Windows convierten al copiar y `setup.sh` limpia `lab.conf`. |
 | Relojes desfasados daban retrasos de réplica negativos o enormes. | Se activa NTP y `doctor` muestra el desfase de cada nodo. |
 | Una réplica podía asumir antes de que el primario existiera. | Una réplica nunca asume si no ha recibido ni un latido. |
+| La decisión de quién manda la tomaba un script propio con testigos. | La toma etcd con Raft, con contrato y fencing. |
 
 ### Red privada, real o simulada
 
@@ -277,7 +305,7 @@ y no debe presentarse como Tailscale real. `OVERLAY_MODE=none` usa las direccion
 | `deploy/windows/2-crear-vms.cmd` | Crea las cuatro VM servidoras en VirtualBox con Ubuntu Server de forma desatendida, 1,5 GB de RAM cada una. |
 | `deploy/windows/3-desplegar.cmd` | Copia el proyecto y `deploy/lab.conf` a los servidores y ejecuta `setup.sh` en cada uno. |
 | `deploy/windows/cliente-wsl.cmd` | En el computador de cada integrante. Deja WSL encendido e instala el cliente dentro de WSL. |
-| `deploy/windows/4-escenario.cmd` | Recorre el escenario completo con capturas: normal, caída de A, caída de B, failback. |
+| `deploy/windows/4-escenario.cmd` | Recorre el escenario completo con capturas: normal con etcd y montajes, caída de A, caída de B, failback. |
 
 ### Vista de clúster en la web
 

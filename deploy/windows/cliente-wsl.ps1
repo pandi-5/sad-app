@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   1. Deja WSL encendido aunque se cierren las ventanas. Antes WSL se apagaba solo, el
-     testigo desaparecía de Tailscale y el vigilante no tenía mayoría para decidir.
+     cliente desaparecía de Tailscale y etcd, que corre en los clientes, perdía la mayoría.
   2. Copia el proyecto a WSL convirtiendo los finales de línea a LF.
   3. Ejecuta setup.sh cliente N como root dentro de WSL.
   Necesita deploy\lab.conf, el mismo que se usó en los servidores.

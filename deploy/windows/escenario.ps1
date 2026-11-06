@@ -45,11 +45,13 @@ if ($etapas -contains "Normal") {
   Evidencia "tailscale-servidor-a" "servidor-a" "tailscale status; echo; sed -n '/sad-lab begin/,/sad-lab end/p' /etc/hosts"
   Evidencia "tailscale-cliente-1"  "cliente-1"  "tailscale ip -4; uname -r; grep -i microsoft /proc/sys/kernel/osrelease && echo 'cliente en WSL'"
   Evidencia "diagnostico-cliente-1" "cliente-1" "$S doctor"
+  Evidencia "etcd-cliente-1" "cliente-1" "ETCDCTL_API=3 etcdctl --endpoints=127.0.0.1:2379 endpoint status --cluster -w table; echo; python3 /opt/sad-app/cluster/elector.py status"
+  Evidencia "montajes-cliente-1" "cliente-1" "mount | grep -E 'compartido|lectura'; cat /run/sad-escritura /run/sad-lectura"
   Evidencia "nfs-exportacion-servidor-a" "servidor-a" "cat /etc/exports; echo; sudo exportfs -v"
   Evidencia "nfs-exportacion-servidor-b" "servidor-b" "cat /etc/exports; echo; sudo exportfs -v"
   Evidencia "nfs-montaje-cliente-1" "cliente-1" "mount | grep compartido; df -h /mnt/compartido; ls -la /mnt/compartido"
-  Evidencia "servicios-servidor-a" "servidor-a" "for s in nfs-server sad-app sad-replicator sad-watchdog sad-agent; do printf '%-16s %s\n' `$s `$(systemctl is-active `$s); done; echo; journalctl -u sad-replicator -n 8 --no-pager"
-  Evidencia "replica-servidor-c" "servidor-c" "ls -la /srv/compartido/.cluster; cat /srv/compartido/.cluster/heartbeat; echo; journalctl -u sad-watchdog -n 4 --no-pager"
+  Evidencia "servicios-servidor-a" "servidor-a" "for s in nfs-server sad-app sad-replicator sad-elector sad-agent; do printf '%-16s %s\n' `$s `$(systemctl is-active `$s); done; echo; journalctl -u sad-replicator -n 8 --no-pager"
+  Evidencia "replica-servidor-c" "servidor-c" "ls -la /srv/compartido/.cluster; cat /srv/compartido/.cluster/heartbeat; echo; journalctl -u sad-elector -n 4 --no-pager"
   Evidencia "estado-del-cluster" "cliente-1" "$S status"
   Evidencia "pruebas-punta-a-punta" "cliente-1" "$S test" 44
 }
@@ -57,8 +59,8 @@ if ($etapas -contains "Web") { CapturasWeb "http://servidor-a:5000" "web-a" }
 if ($etapas -contains "Caida") {
   Evidencia "caida-simulada-servidor-a" "servidor-a" "$S simulate-failure"
   EsperarPrimario "servidor-b"
-  Evidencia "caida-vigilante-servidor-b" "servidor-b" "sudo grep vigilante /var/log/sad-lab.log | tail -n 10; echo; grep -E '^/srv' /etc/exports; systemctl is-active sad-app"
-  Evidencia "caida-vigilante-servidor-c" "servidor-c" "sudo grep vigilante /var/log/sad-lab.log | tail -n 6"
+  Evidencia "caida-elector-servidor-b" "servidor-b" "sudo grep elector /var/log/sad-lab.log | tail -n 10; echo; grep -E '^/srv' /etc/exports; systemctl is-active sad-app"
+  Evidencia "caida-elector-servidor-c" "servidor-c" "sudo grep elector /var/log/sad-lab.log | tail -n 6"
   EsperarEscritura "cliente-1"
   Evidencia "caida-estado-del-cluster" "cliente-1" "$S status"
   Evidencia "caida-montaje-cliente" "cliente-1" "sudo tail -n 4 /var/log/sad-lab.log; mount | grep compartido; touch /mnt/compartido/escrito-tras-la-caida.txt && echo 'escritura correcta tras la caida'"
@@ -66,14 +68,14 @@ if ($etapas -contains "Caida") {
 if ($etapas -contains "Caida2") {
   Evidencia "caida2-simulada-servidor-b" "servidor-b" "$S simulate-failure"
   EsperarPrimario "servidor-c"
-  Evidencia "caida2-vigilante-servidor-c" "servidor-c" "sudo grep vigilante /var/log/sad-lab.log | tail -n 10; echo; grep -E '^/srv' /etc/exports"
+  Evidencia "caida2-elector-servidor-c" "servidor-c" "sudo grep elector /var/log/sad-lab.log | tail -n 10; echo; grep -E '^/srv' /etc/exports"
   EsperarEscritura "cliente-1"
   Evidencia "caida2-estado-del-cluster" "cliente-1" "$S status"
 }
 if ($etapas -contains "WebCaida") { CapturasWeb "http://servidor-c:5000" "web-c-tras-caidas" }
 if ($etapas -contains "Failback") {
   Evidencia "failback-servidor-a" "servidor-a" "$S failback" 40
-  $null = Remoto "servidor-b" "sudo systemctl start nfs-server sad-agent sad-replicator sad-watchdog"
+  $null = Remoto "servidor-b" "sudo systemctl start nfs-server sad-agent sad-replicator sad-elector"
   Start-Sleep -Seconds 12
   Evidencia "failback-estado-del-cluster" "cliente-1" "$S status"
 }

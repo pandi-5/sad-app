@@ -6,8 +6,9 @@
   Orden  servidor-a, servidor-b, servidor-c, servidor-d, y una segunda pasada completa.
   Necesita deploy\lab.conf con TS_AUTHKEY y SSH_PASSWORD. Se crea copiando lab.conf.example.
   El mismo lab.conf se sube a todos los servidores, así todos usan los mismos valores.
-  Los clientes WSL se instalan aparte con cliente-wsl.cmd. Cuando estén, vuelve a correr
-  este script con -Pasadas 1 para que los servidores intercambien llaves con ellos.
+  Primero instala al menos dos clientes WSL con cliente-wsl.cmd: ellos forman etcd, y sin
+  etcd con mayoría ningún servidor puede ser primario. Cuando estén los tres, vuelve a
+  correr cliente-wsl.cmd en cada uno para cerrar las llaves SSH con los servidores.
 #>
 param([switch]$SinCapturas, [int]$Pasadas = 2, [string[]]$Solo = @())
 . (Join-Path $PSScriptRoot "comun.ps1")
@@ -62,5 +63,5 @@ foreach ($pasada in 1..$Pasadas) {
 Write-Host "`n########## Resumen ##########"
 if ($fallos.Count -eq 0) { Write-Host "Todas las ejecuciones terminaron bien." -ForegroundColor Green }
 else { Write-Host ("Fallaron: " + ($fallos -join ", ")) -ForegroundColor Red }
-Write-Host "Siguiente paso: en cada computador con WSL ejecuta deploy\windows\cliente-wsl.cmd"
+Write-Host "Siguiente paso: vuelve a ejecutar deploy\windows\cliente-wsl.cmd en cada computador con WSL para cerrar las llaves SSH."
 try { Stop-Transcript | Out-Null } catch { }

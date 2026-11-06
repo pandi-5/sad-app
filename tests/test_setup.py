@@ -132,7 +132,7 @@ def test_embedded_scripts_have_valid_syntax(tmp_path):
 def test_embedded_scripts_load_derived_after_lab_conf():
     """lab.conf deja LAB_USER vacío. derived.conf debe leerse después para que no lo pise."""
     text = (ROOT / "setup.sh").read_text()
-    for name in ("replicate.sh", "watchdog.sh"):
+    for name in ("replicate.sh", "hosts-sync.sh"):
         start = text.index(f"{name} 755")
         block = text[start:start + 700]
         assert block.index("lab.conf") < block.index("derived.conf"), name
@@ -160,106 +160,20 @@ def test_seven_nodes_have_addresses(tmp_path):
 def test_derived_lists_servers_in_succession_order(tmp_path):
     out = run_bash(
         """
-        OVERLAY_MODE=real; WITNESS_QUORUM=2
+        OVERLAY_MODE=real; ETCD_MEMBERS="$CLIENTS"; LEASE_TTL=6; RANK_DELAY=2; STALE_GRACE=30; READ_MOUNT_DIR=/mnt/lectura
         write_derived servidor servidor-c
         . "$DERIVED"
-        echo "servers:$SERVERS"; echo "clients:$CLIENTS"; echo "q:$WITNESS_QUORUM"; echo "d:$ADDR_SERVIDOR_D"
+        echo "servers:$SERVERS"; echo "clients:$CLIENTS"; echo "e:$ETCD_ENDPOINTS"; echo "d:$ADDR_SERVIDOR_D"
         """,
         tmp_path,
     )
     assert out.returncode == 0, out.stderr
     assert "servers:servidor-a servidor-b servidor-c servidor-d" in out.stdout
     assert "clients:cliente-1 cliente-2 cliente-3" in out.stdout
-    assert "q:2" in out.stdout
+    assert "e:http://cliente-1:2379,http://cliente-2:2379,http://cliente-3:2379" in out.stdout
     assert "d:servidor-d" in out.stdout
 
 
 def test_lab_conf_example_has_no_crlf():
     assert b"\r" not in (ROOT / "deploy" / "lab.conf.example").read_bytes()
     assert b"\r" not in (ROOT / "setup.sh").read_bytes()
-
-
-def _watchdog_world(tmp_path, up, cut=(), primary_here=None, others_primary=None):
-    """Prepara un vigilante de servidor-c con red, testigos y agentes simulados."""
-    import re
-    text = (ROOT / "setup.sh").read_text()
-    body = re.search(r"watchdog.sh 755 <<'EOF' \|\| true\n(#!/usr/bin/env bash.*?)\nEOF\n", text, re.S).group(1)
-    etc, state, world, bindir = (tmp_path / d for d in ("etc", "state", "world", "bin"))
-    for d in (etc, state, world / "up", world / "cut", world / "role", world / "epoch", bindir,
-              tmp_path / "share" / ".cluster", tmp_path / "app"):
-        d.mkdir(parents=True, exist_ok=True)
-    body = body.replace("/etc/sad-lab", str(etc)).replace("/var/lib/sad-lab", str(state)).replace("/var/log/sad-lab.log", str(tmp_path / "log"))
-    (tmp_path / "watchdog.sh").write_text(body + "\n")
-    (etc / "lab.conf").write_text('LAB_USER=""\n')
-    addrs = "".join(f"ADDR_{n.upper().replace('-', '_')}={n}\n" for n in
-                    "servidor-a servidor-b servidor-c servidor-d cliente-1 cliente-2 cliente-3".split())
-    (etc / "derived.conf").write_text(
-        f"NODE_NAME=servidor-c\nLAB_USER=root\nAPP_DIR={tmp_path}/app\nEXPORT_DIR={tmp_path}/share\n"
-        'AGENT_PORT=5100\nWATCH_FAILS=2\nWITNESS_QUORUM=2\n'
-        'SERVERS="servidor-a servidor-b servidor-c servidor-d"\nCLIENTS="cliente-1 cliente-2 cliente-3"\n' + addrs)
-    (tmp_path / "share" / ".cluster" / "heartbeat").write_text("{}")
-    (tmp_path / "exports").write_text(f"{tmp_path}/share 100.64.0.0/10(ro,sync)\n")
-    body = (tmp_path / "watchdog.sh").read_text().replace("/etc/exports", str(tmp_path / "exports"))
-    (tmp_path / "watchdog.sh").write_text(body)
-    (tmp_path / "app" / ".env").write_text("NODE_ROLE=replica\n")
-    (tmp_path / "app" / "setup.sh").write_text(f"#!/bin/bash\nrm -f {state}/primary\necho demote >> {tmp_path}/log\n")
-    (tmp_path / "app" / "setup.sh").chmod(0o755)
-    for h in up:
-        (world / "up" / h).touch()
-    for h in cut:
-        (world / "cut" / h).touch()
-    for h, epoch in (others_primary or {}).items():
-        (world / "role" / h).write_text("primario")
-        (world / "epoch" / h).write_text(str(epoch))
-    if primary_here is not None:
-        (state / "primary").write_text(str(primary_here))
-    w = str(world)
-    fakes = {
-        "curl": f'url="${{@: -1}}"; h=$(echo "$url" | sed -E "s#http://([^:/]+).*#\\1#")\n'
-                f'[ -f {w}/up/$h ] && [ ! -f {w}/cut/$h ] || exit 7\n'
-                f'case "$url" in */status) echo "{{\\"effective_role\\":\\"$(cat {w}/role/$h 2>/dev/null || echo replica)\\",'
-                f'\\"primary_epoch\\":$(cat {w}/epoch/$h 2>/dev/null || echo null)}}";;\n'
-                f'*/probe*) t=${{url##*target=}}; [ -f {w}/up/$t ] && echo \'{{"reachable":true}}\' || echo \'{{"reachable":false}}\';; esac',
-        "nc": f'h="${{@: -2:1}}"; [ -f {w}/up/$h ] && [ ! -f {w}/cut/$h ]',
-        "sleep": f'n=$(cat {tmp_path}/n 2>/dev/null || echo 0); echo $((n+1)) > {tmp_path}/n; [ $n -ge 6 ] && kill -TERM $PPID; exit 0',
-        "exportfs": "exit 0", "systemctl": "exit 0", "install": "exit 0",
-    }
-    for name, code in fakes.items():
-        f = bindir / name
-        f.write_text("#!/bin/bash\n" + code + "\n")
-        f.chmod(0o755)
-    import os
-    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
-    subprocess.run(["bash", str(tmp_path / "watchdog.sh")], env=env, capture_output=True, text=True, timeout=30)
-    return (tmp_path / "log").read_text(), (state / "primary").exists()
-
-
-TESTIGOS = ["cliente-1", "cliente-2", "cliente-3"]
-
-
-def test_watchdog_waits_for_earlier_server(tmp_path):
-    log, primary = _watchdog_world(tmp_path, ["servidor-b", "servidor-c", "servidor-d", *TESTIGOS])
-    assert "servidor-b sigue vivo" in log and not primary
-
-
-def test_watchdog_takes_over_when_earlier_servers_are_down(tmp_path):
-    log, primary = _watchdog_world(tmp_path, ["servidor-c", "servidor-d", *TESTIGOS])
-    assert "Asumiendo como primario" in log and primary
-    assert "(rw," in (tmp_path / "exports").read_text()
-
-
-def test_watchdog_needs_witness_majority(tmp_path):
-    log, primary = _watchdog_world(tmp_path, ["servidor-c", "servidor-d", "cliente-1"])
-    assert "Sin mayoría de testigos" in log and not primary
-
-
-def test_watchdog_does_not_take_over_on_own_partition(tmp_path):
-    up = ["servidor-a", "servidor-b", "servidor-c", "servidor-d", *TESTIGOS]
-    log, primary = _watchdog_world(tmp_path, up, cut=["servidor-a", "servidor-b"])
-    assert "puede ser mi red" in log and not primary
-
-
-def test_watchdog_older_primary_steps_down(tmp_path):
-    log, primary = _watchdog_world(tmp_path, ["servidor-d", *TESTIGOS], primary_here=100,
-                                   others_primary={"servidor-d": 200})
-    assert "Cedo y vuelvo a réplica" in log and not primary

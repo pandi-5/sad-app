@@ -5,8 +5,7 @@ Solo usa la biblioteca estándar. Responde en el puerto 5100.
 
   GET /status           estado del nodo en JSON
   GET /probe?target=x   comprueba si este nodo alcanza a un objetivo vigilado
-                        y lo informa. Lo usa el vigilante del servidor B como
-                        testigo antes de promoverse.
+                        y lo informa. Sirve para diagnosticar la red.
 
 Variables de entorno, tomadas de /etc/sad-lab/lab.conf mediante systemd:
   NODE_NAME, NODE_ROLE, EXPORT_DIR, MOUNT_DIR, AGENT_PORT,
@@ -31,7 +30,7 @@ EXPORTS_FILE = os.environ.get("EXPORTS_FILE", "/etc/exports")
 PORT = int(os.environ.get("AGENT_PORT", "5100"))
 STATE_DIR = os.environ.get("STATE_DIR", "/var/lib/sad-lab")
 FIRST_SERVER = os.environ.get("FIRST_SERVER", "servidor-a")
-SERVICES = ["nfs-server", "sad-app", "sad-replicator", "sad-watchdog", "sad-mount-watch"]
+SERVICES = ["nfs-server", "sad-app", "sad-replicator", "sad-elector", "etcd", "sad-mount-watch"]
 BOOT = time.time()
 
 

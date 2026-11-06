@@ -3,12 +3,23 @@
 # Todos los nodos deben usar exactamente los mismos valores.
 
 # ---------- Nodos ----------
-# El orden de SERVERS es el orden de sucesión. Si cae el primario asume el siguiente vivo.
+# El orden de SERVERS es el orden de sucesión. Si cae el primario asume el siguiente vivo
+# que tenga los datos al día.
 SERVERS="servidor-a servidor-b servidor-c servidor-d"
-# Los clientes también son testigos. Con tres, la mayoría es dos.
 CLIENTS="cliente-1 cliente-2 cliente-3"
-# Testigos que deben confirmar la caída. Vacío usa la mayoría de CLIENTS.
-WITNESS_QUORUM=""
+
+# ---------- Consenso con etcd ----------
+# Nodos que forman el clúster etcd, que usa Raft. Vacío usa los CLIENTS. Con tres miembros
+# la mayoría es dos: si se apagan dos, nadie puede ser primario y todo queda en solo lectura.
+ETCD_MEMBERS=""
+# Segundos del contrato del primario. Si no lo renueva, vence y otro asume. A un tercio de
+# este tiempo sin contacto con la mayoría, el primario se pone solo en solo lectura.
+LEASE_TTL=6
+# Segundos que espera cada servidor por cada puesto que tiene delante en la sucesión.
+RANK_DELAY=2
+# Si en estos segundos no asume ningún servidor con los datos del último primario, se
+# permite que asuma uno con datos más viejos.
+STALE_GRACE=30
 
 # Usuario Linux común que setup.sh crea en todos los nodos. Debe ser el mismo en todos.
 LAB_USER="sadlab"
@@ -52,7 +63,10 @@ LAN_CONFIGURE=yes
 
 # ---------- Carpeta compartida ----------
 EXPORT_DIR=/srv/compartido
+# En los clientes. Escritura, montada desde el primario.
 MOUNT_DIR=/mnt/compartido
+# En los clientes. Solo lectura, montada desde la réplica más cercana.
+READ_MOUNT_DIR=/mnt/lectura
 
 # ---------- Aplicación web ----------
 APP_PORT=5000
@@ -64,9 +78,8 @@ ADMIN_PASS=""
 SEED_USERS="cliente1:ClaveCliente123,cliente2:ClaveCliente456,cliente3:ClaveCliente789"
 
 # ---------- Réplica y conmutación ----------
+# El replicador copia apenas cambia un archivo. Este es el máximo entre latidos.
 REPL_INTERVAL=2
-# Fallos seguidos sin primario antes de consultar a los testigos.
-WATCH_FAILS=3
 
 # yes permite sudo sin contraseña al usuario del laboratorio, necesario para failback.
 SUDO_NOPASSWD=yes
