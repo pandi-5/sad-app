@@ -2,11 +2,13 @@
 # =============================================================================
 # setup.sh  Despliegue único del laboratorio de archivos distribuidos.
 #
-#   sudo ./setup.sh servidor-a        Servidor primario inicial
-#   sudo ./setup.sh servidor-b        Réplica, primera en la línea de sucesión
-#   sudo ./setup.sh servidor-c        Réplica, segunda en la línea de sucesión
-#   sudo ./setup.sh servidor-d        Réplica, tercera en la línea de sucesión
-#   sudo ./setup.sh cliente [1|2|3]   Cliente y testigo
+#   sudo ./setup.sh servidor-a        Servidor, primero en la sucesión
+#   sudo ./setup.sh servidor-b        Servidor, segundo en la sucesión
+#   sudo ./setup.sh servidor-c        Servidor, tercero en la sucesión
+#   sudo ./setup.sh servidor-d        Servidor, cuarto en la sucesión
+#   sudo ./setup.sh cliente [1|2|3]   Cliente y miembro de etcd
+#
+#   El primario lo elige etcd, con consenso Raft entre los clientes. Ver cluster/elector.py.
 #
 #   ./setup.sh doctor                 Diagnóstico de este equipo y de la red
 #   ./setup.sh status                 Estado de todos los nodos
@@ -78,13 +80,13 @@ load_config() {
   [ -n "$LAB_USER" ] || LAB_USER=sadlab
   [ "$LAB_USER" != "root" ] || die "LAB_USER no puede ser root."
   : "${LAN_CIDR:=24}" "${OVERLAY_MODE:=real}" "${EXPORT_DIR:=/srv/compartido}" "${MOUNT_DIR:=/mnt/compartido}"
-  : "${APP_PORT:=5000}" "${AGENT_PORT:=5100}" "${REPL_INTERVAL:=2}" "${WATCH_FAILS:=3}"
+  : "${APP_PORT:=5000}" "${AGENT_PORT:=5100}" "${REPL_INTERVAL:=2}"
   : "${ADMIN_USER:=coordinador}" "${SSH_PASSWORD:=}" "${SUDO_NOPASSWD:=yes}" "${TS_AUTHKEY:=}"
   : "${SEED_USERS:=}" "${LAN_CONFIGURE:=yes}" "${ADMIN_PASS:=}" "${APP_DIR:=/opt/sad-app}"
-  : "${WITNESS_QUORUM:=}"
+  : "${ETCD_MEMBERS:=}" "${LEASE_TTL:=6}" "${RANK_DELAY:=2}" "${STALE_GRACE:=30}" "${READ_MOUNT_DIR:=/mnt/lectura}"
   ALL_NODES="$SERVERS $CLIENTS"
-  local nc; nc=$(wc -w <<<"$CLIENTS")
-  [ -n "$WITNESS_QUORUM" ] || WITNESS_QUORUM=$((nc / 2 + 1))
+  # etcd corre en los clientes por defecto. Tres miembros, la mayoría es dos.
+  [ -n "$ETCD_MEMBERS" ] || ETCD_MEMBERS="$CLIENTS"
   LAB_HOME="$(getent passwd "$LAB_USER" | cut -d: -f6 || true)"
   [ -n "$LAB_HOME" ] || LAB_HOME="/home/$LAB_USER"
 }
@@ -118,6 +120,10 @@ addr_of() {
   esac
 }
 
+is_etcd_member() { case " $ETCD_MEMBERS " in *" $1 "*) return 0 ;; esac; return 1; }
+etcd_endpoints() { local m out=""; for m in $ETCD_MEMBERS; do out="$out${out:+,}http://$(addr_of "$m"):2379"; done; printf '%s' "$out"; }
+elector() { python3 "$APP_DIR/cluster/elector.py" "$@"; }
+
 export_net() {
   case "$OVERLAY_MODE" in
     sim|real) echo "100.64.0.0/10" ;;
@@ -141,8 +147,12 @@ write_derived() {
     echo "APP_PORT=$APP_PORT"
     echo "AGENT_PORT=$AGENT_PORT"
     echo "REPL_INTERVAL=$REPL_INTERVAL"
-    echo "WATCH_FAILS=$WATCH_FAILS"
-    echo "WITNESS_QUORUM=$WITNESS_QUORUM"
+    echo "LEASE_TTL=$LEASE_TTL"
+    echo "RANK_DELAY=$RANK_DELAY"
+    echo "STALE_GRACE=$STALE_GRACE"
+    echo "READ_MOUNT_DIR=$READ_MOUNT_DIR"
+    echo "ETCD_MEMBERS=\"$ETCD_MEMBERS\""
+    echo "ETCD_ENDPOINTS=$(etcd_endpoints)"
     echo "SERVERS=\"$SERVERS\""
     echo "CLIENTS=\"$CLIENTS\""
     for n in $ALL_NODES; do
@@ -203,6 +213,8 @@ agent_status() { curl -fsS -m 2 "http://$(addr_of "$1"):$AGENT_PORT/status" 2>/d
 # Servidor que hoy es primario según los agentes, o nada.
 current_primary() {
   local s j
+  s="$(elector leader 2>/dev/null || true)"
+  [ -n "$s" ] && { printf '%s' "$s"; return 0; }
   for s in $SERVERS; do
     j="$(agent_status "$s")"
     [ -n "$j" ] && [ "$(jq -r .effective_role <<<"$j" 2>/dev/null)" = "primario" ] && { printf '%s' "$s"; return 0; }
@@ -356,6 +368,37 @@ step_identity() {
       echo "# sad-lab end"
     } >> /etc/hosts
     ok "Nombres de los nodos añadidos a /etc/hosts"
+  fi
+}
+
+# Limpia lo que dejó la versión anterior del laboratorio en máquinas que se reutilizan:
+# la red simulada tssim0, que choca con las rutas de Tailscale, los servicios de cliente en
+# una VM que ahora es servidor, el vigilante viejo y sus marcas.
+step_legacy_cleanup() {
+  local role="$1" changed=0
+  if [ "$OVERLAY_MODE" != "sim" ] && { [ -f /etc/systemd/system/sad-overlay-sim.service ] || ip link show tssim0 >/dev/null 2>&1; }; then
+    systemctl disable --now sad-overlay-sim >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/sad-overlay-sim.service "$LIB_DIR/overlay-sim.sh"
+    ip link del tssim0 2>/dev/null || true
+    ip -4 route show | awk '/^100\.64\./ && !/tailscale0/ {print $1}' | while read -r r; do ip route del "$r" 2>/dev/null || true; done
+    changed=1
+  fi
+  if [ "$role" = "servidor" ] && [ -f /etc/systemd/system/sad-mount-watch.service ]; then
+    systemctl disable --now sad-mount-watch sad-mount >/dev/null 2>&1 || true
+    umount -f -l "$MOUNT_DIR" 2>/dev/null || true
+    rm -f /etc/systemd/system/sad-mount.service /etc/systemd/system/sad-mount-watch.service
+    changed=1
+  fi
+  if [ -f /etc/systemd/system/sad-watchdog.service ]; then
+    systemctl disable --now sad-watchdog >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/sad-watchdog.service "$LIB_DIR/watchdog.sh"
+    changed=1
+  fi
+  [ -f "$STATE_DIR/promoted" ] && { rm -f "$STATE_DIR/promoted" "$STATE_DIR/initialized"; changed=1; }
+  if [ "$changed" -eq 1 ]; then
+    systemctl daemon-reload
+    step "Limpieza de la versión anterior"
+    ok "Red simulada, servicios viejos y marcas antiguas retirados"
   fi
 }
 
@@ -602,34 +645,16 @@ EOF
 # =============================================================================
 # Servidores
 # =============================================================================
-# Un servidor es primario si existe $STATE_DIR/primary. El archivo guarda la época,
-# la hora en que asumió. Si dos se creen primarios, cede el de época más vieja.
+# Un servidor es primario si existe $STATE_DIR/primary. Lo escribe el elector cuando gana
+# la elección en etcd, con la época, la revisión de etcd en que ganó.
 is_primary_local() { [ -f "$STATE_DIR/primary" ]; }
 
-step_role_state() {
-  local node="$1" other
-  step "Papel de $node en el clúster"
-  if [ -f "$STATE_DIR/initialized" ]; then
-    is_primary_local && ok "$node es primario" || ok "$node es réplica"
-    return
-  fi
-  if [ "$node" = "$(first_server)" ]; then
-    other="$(current_primary || true)"
-    if [ -n "$other" ] && [ "$other" != "$node" ]; then
-      warn "$other ya es primario. $node entra como réplica, usa failback para recuperar el servicio."
-    else
-      date +%s.%N > "$STATE_DIR/primary"; ok "$node arranca como primario"
-    fi
-  else ok "$node arranca como réplica, puesto $(server_rank "$node") en la sucesión"; fi
-  touch "$STATE_DIR/initialized"
-}
 
-server_rank() { local i=0 s; for s in $SERVERS; do i=$((i + 1)); [ "$s" = "$1" ] && { echo "$i"; return; }; done; echo 0; }
 
 step_nfs_server() {
   local opts line uid gid
   step "Servidor NFS, carpeta $EXPORT_DIR"
-  apt_install nfs-kernel-server
+  apt_install nfs-kernel-server inotify-tools
   mkdir -p "$EXPORT_DIR/.cluster"
   chown -R "$LAB_USER":"$LAB_USER" "$EXPORT_DIR"; chmod 775 "$EXPORT_DIR"
   modprobe nfsd 2>/dev/null || true
@@ -752,10 +777,12 @@ c.commit()
 PY
 }
 
-# Corre en todos los servidores. Solo trabaja mientras este servidor sea el primario,
-# y entonces copia a todas las demás réplicas. Si otro asume, sigue desde allá.
+# Corre en todos los servidores. Solo trabaja mientras este servidor sea el primario.
+# Ya no espera 2 s fijos: inotify lo despierta apenas cambia un archivo y copia a todas
+# las réplicas en paralelo. El latido lleva la época, así cada réplica sabe de quién
+# tiene los datos y el elector no deja asumir a un servidor con datos viejos.
 step_replicator() {
-  step "Replicador hacia las demás réplicas"
+  step "Replicador casi inmediato hacia las demás réplicas"
   write_file $LIB_DIR/replicate.sh 755 <<'EOF' || true
 #!/usr/bin/env bash
 # Mientras este servidor sea el primario copia la carpeta y la base a cada réplica.
@@ -764,11 +791,19 @@ set -u
 . /etc/sad-lab/derived.conf
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new"
 addr() { local v="ADDR_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"; printf '%s' "${!v}"; }
-declare -A state
-mkdir -p "$EXPORT_DIR/.cluster"
+mkdir -p "$EXPORT_DIR/.cluster" /tmp/sad-repl
+sync_to() {  # sync_to servidor
+  local s="$1" a; a="$(addr "$s")"
+  if timeout 60 rsync -a --delete --exclude 'lost+found' -e "$SSH" "$EXPORT_DIR/" "$LAB_USER@$a:$EXPORT_DIR/" 2>"/tmp/sad-repl/$s.err"; then
+    [ "$(cat "/tmp/sad-repl/$s.state" 2>/dev/null)" = ok ] || { echo "réplica al día con $s"; echo ok > "/tmp/sad-repl/$s.state"; }
+  else
+    [ "$(cat "/tmp/sad-repl/$s.state" 2>/dev/null)" = fail ] || { echo "$s no responde: $(head -1 "/tmp/sad-repl/$s.err")"; echo fail > "/tmp/sad-repl/$s.state"; }
+  fi
+}
 while true; do
-  if [ ! -f /var/lib/sad-lab/primary ]; then sleep "$REPL_INTERVAL"; continue; fi
-  printf '{"ts": %s, "node": "%s"}\n' "$(date +%s.%N)" "$NODE_NAME" > "$EXPORT_DIR/.cluster/heartbeat.tmp" \
+  if [ ! -f /var/lib/sad-lab/primary ]; then sleep 1; continue; fi
+  epoch="$(cat /var/lib/sad-lab/primary)"
+  printf '{"ts": %s, "node": "%s", "epoch": %s}\n' "$(date +%s.%N)" "$NODE_NAME" "$epoch" > "$EXPORT_DIR/.cluster/heartbeat.tmp" \
     && mv -f "$EXPORT_DIR/.cluster/heartbeat.tmp" "$EXPORT_DIR/.cluster/heartbeat"
   if [ -f "$APP_DIR/data/sad.db" ]; then
     "$APP_DIR/.venv/bin/python" - "$APP_DIR/data/sad.db" "$EXPORT_DIR/.cluster/sad.db.tmp" <<'PY' 2>/dev/null && mv -f "$EXPORT_DIR/.cluster/sad.db.tmp" "$EXPORT_DIR/.cluster/sad.db"
@@ -777,29 +812,13 @@ src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2])
 src.backup(dst); dst.close(); src.close()
 PY
   fi
-  # Si otro servidor también se cree primario no se copia nada. El vigilante decide
-  # cuál cede, y así nunca se pisa la carpeta del primario bueno con datos viejos.
-  other=""
-  for s in $SERVERS; do
-    [ "$s" = "$NODE_NAME" ] && continue
-    role="$(curl -fsS -m 2 "http://$(addr "$s"):$AGENT_PORT/status" 2>/dev/null | jq -r .effective_role 2>/dev/null || true)"
-    [ "$role" = "primario" ] && { other="$s"; break; }
-  done
-  if [ -n "$other" ]; then
-    [ "${state[split_]:-}" = "split" ] || { echo "$other también es primario, pauso la réplica"; state[split_]=split; }
-    sleep "$REPL_INTERVAL"; continue
-  fi
-  state[split_]=""
-  for s in $SERVERS; do
-    [ "$s" = "$NODE_NAME" ] && continue
-    a="$(addr "$s")"
-    if timeout 60 rsync -a --delete --exclude 'lost+found' -e "$SSH" "$EXPORT_DIR/" "$LAB_USER@$a:$EXPORT_DIR/" 2>/tmp/sad-repl.err; then
-      [ "${state[$s]:-}" = "ok" ] || { echo "réplica al día con $s"; state[$s]=ok; }
-    else
-      [ "${state[$s]:-}" = "fail" ] || { echo "$s no responde: $(head -1 /tmp/sad-repl.err)"; state[$s]=fail; }
-    fi
-  done
-  sleep "$REPL_INTERVAL"
+  for s in $SERVERS; do [ "$s" = "$NODE_NAME" ] || sync_to "$s" & done
+  wait
+  # Espera un cambio en la carpeta, o REPL_INTERVAL segundos para el latido. Las sondas
+  # .probe que escriben los clientes cada pocos segundos no cuentan como cambio.
+  inotifywait -qq -r -t "$REPL_INTERVAL" -e close_write,create,delete,move,attrib \
+    --exclude '(/\.cluster/|/\.probe-|/\.setup-probe|/\.espera)' "$EXPORT_DIR" 2>/dev/null || true
+  sleep 0.2   # agrupa ráfagas de cambios en una sola copia
 done
 EOF
   write_file /etc/systemd/system/sad-replicator.service <<EOF || true
@@ -818,136 +837,71 @@ EOF
   systemctl daemon-reload
   systemctl enable sad-replicator >/dev/null 2>&1
   systemctl restart sad-replicator
-  ok "Replicador activo, intervalo ${REPL_INTERVAL}s"
+  ok "Replicador activo, despierta con cada cambio y como máximo cada ${REPL_INTERVAL}s"
 }
 
-# Corre en todos los servidores.
-#   Réplica  si no hay primario vivo y todos los servidores anteriores en la sucesión
-#            están caídos, pregunta a los testigos y asume si la mayoría confirma.
-#   Primario si encuentra otro primario con época más nueva, cede y vuelve a réplica.
-step_watchdog() {
-  step "Vigilante con testigos"
-  write_file $LIB_DIR/watchdog.sh 755 <<'EOF' || true
-#!/usr/bin/env bash
-# Sucesión ordenada de servidores con testigos por mayoría y época contra cerebro dividido.
-set -u
-. /etc/sad-lab/lab.conf
-. /etc/sad-lab/derived.conf
-LOG=/var/log/sad-lab.log
-STATE=/var/lib/sad-lab
-say() { printf '%s [vigilante] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"; }
-addr() { local v="ADDR_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"; printf '%s' "${!v}"; }
-status_of() { curl -fsS -m 2 "http://$(addr "$1"):$AGENT_PORT/status" 2>/dev/null || true; }
-reachable() { nc -z -w2 "$(addr "$1")" 2049 2>/dev/null || nc -z -w2 "$(addr "$1")" "$AGENT_PORT" 2>/dev/null; }
-my_epoch() { cat "$STATE/primary" 2>/dev/null || echo 0; }
-
-# Servidores que van antes que yo en la sucesión.
-ahead() { local s; for s in $SERVERS; do [ "$s" = "$NODE_NAME" ] && return; echo "$s"; done; }
-
-# ¿Hay un primario vivo? Devuelve su nombre.
-live_primary() {
-  local s j
-  for s in $SERVERS; do
-    [ "$s" = "$NODE_NAME" ] && continue
-    j="$(status_of "$s")"
-    [ "$(jq -r .effective_role <<<"$j" 2>/dev/null)" = "primario" ] || continue
-    nc -z -w2 "$(addr "$s")" 2049 2>/dev/null && { echo "$s"; return 0; }
-  done
-  return 1
-}
-
-# Pregunta a cada testigo si ve a alguno de los servidores anteriores. Imprime "ven noven".
-witnesses() {
-  local w s r sees=0 nosee=0 answered seen
-  for w in $CLIENTS; do
-    answered=0; seen=0
-    for s in "$@"; do
-      r="$(curl -fsS -m 3 "http://$(addr "$w"):$AGENT_PORT/probe?target=$s" 2>/dev/null | jq -r '.reachable' 2>/dev/null || true)"
-      [ -n "$r" ] || continue
-      answered=1; [ "$r" = "true" ] && seen=1
-    done
-    [ "$answered" -eq 1 ] || continue
-    if [ "$seen" -eq 1 ]; then sees=$((sees + 1)); else nosee=$((nosee + 1)); fi
-  done
-  echo "$sees $nosee"
-}
-
-promote() {
-  say "Asumiendo como primario"
-  date +%s.%N > "$STATE/primary"
-  sed -i "\|^$EXPORT_DIR |s/(ro,/(rw,/" /etc/exports
-  exportfs -ra
-  if [ -f "$EXPORT_DIR/.cluster/sad.db" ]; then
-    systemctl stop sad-app 2>/dev/null || true
-    rm -f "$APP_DIR/data/sad.db" "$APP_DIR/data/sad.db-wal" "$APP_DIR/data/sad.db-shm"
-    install -o "$LAB_USER" -g "$LAB_USER" -m 640 "$EXPORT_DIR/.cluster/sad.db" "$APP_DIR/data/sad.db"
-    say "Base de datos restaurada desde la última instantánea replicada"
+# Elección del primario con etcd. Ver cluster/elector.py.
+step_elector() {
+  step "Elector del primario con etcd"
+  if systemctl list-unit-files sad-watchdog.service >/dev/null 2>&1; then
+    systemctl disable --now sad-watchdog >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/sad-watchdog.service
   fi
-  sed -i 's/^NODE_ROLE=.*/NODE_ROLE=primario/' "$APP_DIR/.env"
-  systemctl enable --now sad-app
-  say "$NODE_NAME es ahora el primario, replica hacia las demás réplicas"
-}
-
-fails=0
-say "Vigilante de $NODE_NAME, sucesión: $SERVERS, quórum de testigos $WITNESS_QUORUM"
-while true; do
-  if [ -f "$STATE/primary" ]; then
-    # Cerebro dividido. Si otro primario es más nuevo, este cede.
-    for s in $SERVERS; do
-      [ "$s" = "$NODE_NAME" ] && continue
-      j="$(status_of "$s")"
-      [ "$(jq -r .effective_role <<<"$j" 2>/dev/null)" = "primario" ] || continue
-      other="$(jq -r '.primary_epoch // 0' <<<"$j")"
-      if python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$other" "$(my_epoch)"; then
-        say "$s es primario desde después que yo. Cedo y vuelvo a réplica"
-        "$APP_DIR/setup.sh" demote >/dev/null 2>&1 || true
-        break
-      fi
-    done
-    fails=0; sleep 2; continue
-  fi
-
-  if p="$(live_primary)"; then
-    [ "$fails" -eq 0 ] || say "$p responde como primario"
-    fails=0; sleep 2; continue
-  fi
-  fails=$((fails + 1)); say "No hay primario que responda, fallo $fails de $WATCH_FAILS"
-  if [ "$fails" -lt "$WATCH_FAILS" ]; then sleep 2; continue; fi
-  fails=0
-
-  # Sin latido nunca hubo un primario. No se asume en una instalación a medias.
-  if [ ! -f "$EXPORT_DIR/.cluster/heartbeat" ]; then say "Nunca recibí réplica, no asumo"; sleep 2; continue; fi
-
-  before="$(ahead | xargs)"
-  waiting=""
-  for s in $before; do reachable "$s" && waiting="$s" && break; done
-  if [ -n "$waiting" ]; then say "$waiting sigue vivo y va antes en la sucesión, le toca a él"; sleep 2; continue; fi
-
-  if [ -z "$before" ]; then set -- $SERVERS; else set -- $before; fi
-  read -r sees nosee < <(witnesses "$@")
-  say "Testigos que ven a ${before:-algún servidor}: $sees, que no: $nosee, quórum $WITNESS_QUORUM"
-  if [ "$sees" -eq 0 ] && [ "$nosee" -ge "$WITNESS_QUORUM" ]; then promote
-  elif [ "$sees" -gt 0 ]; then say "Algún testigo todavía ve un servidor anterior. El problema puede ser mi red, no asumo"
-  else say "Sin mayoría de testigos, no asumo"; fi
-  sleep 2
-done
-EOF
-  write_file /etc/systemd/system/sad-watchdog.service <<EOF || true
+  write_file /etc/systemd/system/sad-elector.service <<EOF || true
 [Unit]
-Description=Vigilante de la sucesión de servidores
-After=network-online.target nfs-server.service sad-agent.service
+Description=Elector del servidor primario con etcd
+After=network-online.target nfs-server.service sad-agent.service tailscaled.service
 
 [Service]
-ExecStart=$LIB_DIR/watchdog.sh
+ExecStart=/usr/bin/python3 $APP_DIR/cluster/elector.py run
 Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable sad-watchdog >/dev/null 2>&1
-  systemctl restart sad-watchdog
-  ok "Vigilante activo"
+  systemctl enable sad-elector >/dev/null 2>&1
+  systemctl restart sad-elector
+  ok "Elector activo, contrato de ${LEASE_TTL}s con etcd en $ETCD_MEMBERS"
+  if elector status >/dev/null 2>&1; then ok "etcd tiene mayoría"
+  else warn "etcd todavía no tiene mayoría. Instala al menos dos de: $ETCD_MEMBERS"; fi
+}
+
+# etcd guarda quién es el primario. Usa Raft, así que sigue funcionando mientras la
+# mayoría de sus miembros responda.
+step_etcd() {
+  local node="$1" m cluster=""
+  step "Miembro de etcd $node"
+  apt_install etcd-server
+  for m in $ETCD_MEMBERS; do cluster="$cluster${cluster:+,}$m=http://$(addr_of "$m"):2380"; done
+  # Un miembro solo no arranca hasta que llegue otro. Sin esto systemd lo mataba a los 90 s.
+  mkdir -p /etc/systemd/system/etcd.service.d
+  write_file /etc/systemd/system/etcd.service.d/sad-lab.conf 644 <<EOF || true
+[Unit]
+After=tailscaled.service sad-hosts.service
+
+[Service]
+TimeoutStartSec=0
+Restart=always
+RestartSec=3
+EOF
+  systemctl daemon-reload
+  if write_file /etc/default/etcd 644 <<EOF
+# Generado por setup.sh
+ETCD_NAME=$node
+ETCD_DATA_DIR=/var/lib/etcd/sad-lab
+ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+ETCD_INITIAL_ADVERTISE_PEER_URLS=http://$(addr_of "$node"):2380
+ETCD_ADVERTISE_CLIENT_URLS=http://$(addr_of "$node"):2379
+ETCD_INITIAL_CLUSTER=$cluster
+ETCD_INITIAL_CLUSTER_STATE=new
+ETCD_INITIAL_CLUSTER_TOKEN=sad-lab
+EOF
+  then systemctl enable etcd >/dev/null 2>&1; systemctl restart etcd --no-block; ok "etcd configurado con $ETCD_MEMBERS"
+  else systemctl enable --now etcd >/dev/null 2>&1 --no-block || true; ok "etcd ya configurado"; fi
+  wait_for "etcd con mayoría" 30 elector status || warn "etcd espera a los demás miembros. Se arma cuando haya dos."
 }
 
 # =============================================================================
@@ -957,46 +911,67 @@ step_client() {
   step "Cliente NFS"
   apt_install nfs-common
   mkdir -p "$MOUNT_DIR"
+  mkdir -p "$READ_MOUNT_DIR"
   write_file /usr/local/bin/sad-mount 755 <<'EOF' || true
 #!/usr/bin/env bash
-# sad-mount [auto|salir|servidor-x]   Monta la carpeta desde el servidor que esté vivo.
+# sad-mount [auto|lectura|salir|servidor-x]
+#   auto     monta MOUNT_DIR con escritura desde el primario que dice etcd
+#   lectura  monta READ_MOUNT_DIR en solo lectura desde la réplica más cercana
 . /etc/sad-lab/derived.conf
 mode="${1:-auto}"
 OPTS="soft,timeo=30,retrans=2"
 addr() { local v="ADDR_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"; printf '%s' "${!v}"; }
 writable() { timeout 5 sh -c "f=$MOUNT_DIR/.probe-\$(hostname); touch \$f && rm -f \$f" 2>/dev/null; }
-try() {  # try dirección  -> 0 si monta
-  umount -f -l "$MOUNT_DIR" 2>/dev/null
-  timeout 15 mount -t nfs4 -o "$OPTS" "$1:$EXPORT_DIR" "$MOUNT_DIR" 2>/dev/null
+try() {  # try dirección carpeta opciones -> 0 si monta
+  umount -f -l "$2" 2>/dev/null
+  timeout 15 mount -t nfs4 -o "$3" "$1:$EXPORT_DIR" "$2" 2>/dev/null
 }
+leader() { python3 "$APP_DIR/cluster/elector.py" leader 2>/dev/null; }
+rtt() { ping -c2 -W1 -q "$(addr "$1")" 2>/dev/null | awk -F/ '/rtt|round-trip/ {print $5}'; }
 case "$mode" in
-  salir) umount -f -l "$MOUNT_DIR" 2>/dev/null; echo "Desmontado."; exit 0 ;;
-  servidor-*) try "$(addr "$mode")" && echo "Montado desde $mode" && exit 0; exit 1 ;;
+  salir) umount -f -l "$MOUNT_DIR" "$READ_MOUNT_DIR" 2>/dev/null; echo "Desmontado."; exit 0 ;;
+  servidor-*) try "$(addr "$mode")" "$MOUNT_DIR" "$OPTS" && echo "Montado desde $mode" && exit 0; exit 1 ;;
+  lectura)
+    p="$(leader)"; best=""; bt=""
+    for s in $SERVERS; do
+      [ "$s" = "$p" ] && continue
+      t="$(rtt "$s")"; [ -n "$t" ] || continue
+      if [ -z "$bt" ] || awk "BEGIN{exit !($t < $bt)}"; then best="$s"; bt="$t"; fi
+    done
+    [ -n "$best" ] || best="$p"
+    [ -n "$best" ] && try "$(addr "$best")" "$READ_MOUNT_DIR" "ro,$OPTS" && { echo "$best" > /run/sad-lectura; echo "Lectura desde $best (${bt:-?} ms)"; exit 0; }
+    echo "No se pudo montar la carpeta de lectura" >&2; exit 1 ;;
 esac
-ro_host=""
+# El primario lo dice etcd. Si etcd no responde, se prueba en el orden de SERVERS.
+p="$(leader)"
+if [ -n "$p" ] && try "$(addr "$p")" "$MOUNT_DIR" "$OPTS" && writable; then echo "$p" > /run/sad-escritura; echo "Montado desde $p con escritura"; exit 0; fi
 for s in $SERVERS; do
-  if try "$(addr "$s")"; then
-    if writable; then echo "Montado desde $s con escritura"; exit 0; fi
-    [ -n "$ro_host" ] || ro_host="$s"
-  fi
+  if try "$(addr "$s")" "$MOUNT_DIR" "$OPTS" && writable; then echo "$s" > /run/sad-escritura; echo "Montado desde $s con escritura"; exit 0; fi
 done
-if [ -n "$ro_host" ] && try "$(addr "$ro_host")"; then echo "Montado desde $ro_host solo para lectura"; exit 0; fi
-echo "No se pudo montar desde ningún servidor" >&2; exit 1
+echo "No se pudo montar con escritura desde ningún servidor" >&2; exit 1
 EOF
   write_file $LIB_DIR/mount-watch.sh 755 <<'EOF' || true
 #!/usr/bin/env bash
-# Vuelve a montar desde el servidor correcto si el actual deja de responder o de aceptar escrituras.
+# Vuelve a montar si el servidor deja de responder, si deja de aceptar escrituras o si
+# etcd anuncia otro primario. También cuida la carpeta de lectura.
 . /etc/sad-lab/derived.conf
 say() { printf '%s [cliente] %s\n' "$(date '+%F %T')" "$*" | tee -a /var/log/sad-lab.log; }
-ok_mount() { mountpoint -q "$MOUNT_DIR" && timeout 5 sh -c "f=$MOUNT_DIR/.probe-\$(hostname); touch \$f && rm -f \$f" 2>/dev/null; }
-bad=0
+ok_rw() { mountpoint -q "$MOUNT_DIR" && timeout 5 sh -c "f=$MOUNT_DIR/.probe-\$(hostname); touch \$f && rm -f \$f" 2>/dev/null; }
+ok_ro() { mountpoint -q "$READ_MOUNT_DIR" && timeout 5 ls "$READ_MOUNT_DIR" >/dev/null 2>&1 \
+          && [ "$(cat /run/sad-lectura 2>/dev/null)" != "$(python3 "$APP_DIR/cluster/elector.py" leader 2>/dev/null)" ]; }
+bad=0; n=0
 while true; do
-  if ok_mount; then bad=0
+  n=$((n + 1))
+  p="$(python3 "$APP_DIR/cluster/elector.py" leader 2>/dev/null)"
+  if [ -n "$p" ] && [ "$p" != "$(cat /run/sad-escritura 2>/dev/null)" ]; then
+    say "etcd anuncia a $p como primario, vuelvo a montar"; /usr/local/bin/sad-mount auto | tee -a /var/log/sad-lab.log; bad=0
+  elif ok_rw; then bad=0
   else
     bad=$((bad + 1))
     if [ "$bad" -ge 2 ]; then say "La carpeta no responde o no es escribible, buscando servidor"; /usr/local/bin/sad-mount auto | tee -a /var/log/sad-lab.log; bad=0; fi
   fi
-  sleep 3
+  if [ $((n % 5)) -eq 0 ] && ! ok_ro; then /usr/local/bin/sad-mount lectura >/dev/null 2>&1; fi
+  sleep 2
 done
 EOF
   write_file /etc/systemd/system/sad-mount.service <<EOF || true
@@ -1009,6 +984,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/sad-mount auto
+ExecStartPost=-/usr/local/bin/sad-mount lectura
 
 [Install]
 WantedBy=multi-user.target
@@ -1042,7 +1018,8 @@ EOF
   systemctl enable sad-mount sad-mount-watch >/dev/null 2>&1
   systemctl restart sad-mount || true
   systemctl restart sad-mount-watch
-  if mountpoint -q "$MOUNT_DIR"; then ok "Carpeta montada en $MOUNT_DIR"; else warn "Todavía no se pudo montar. Los servidores deben estar listos."; fi
+  if mountpoint -q "$MOUNT_DIR"; then ok "Carpeta montada con escritura en $MOUNT_DIR desde $(cat /run/sad-escritura 2>/dev/null)"; else warn "Todavía no se pudo montar. Los servidores deben estar listos."; fi
+  if mountpoint -q "$READ_MOUNT_DIR"; then ok "Carpeta de lectura en $READ_MOUNT_DIR desde $(cat /run/sad-lectura 2>/dev/null)"; fi
   if is_wsl; then
     warn "WSL se apaga solo cuando no hay ventanas abiertas y el testigo desaparece."
     warn "En Windows ejecuta deploy\\windows\\cliente-wsl.cmd para mantenerlo encendido."
@@ -1078,8 +1055,9 @@ validate_server() {
   check "Red privada presente ($OVERLAY_MODE)" overlay_ip_present "$node"
   check "Servicio nfs-server activo" svc_active nfs-server
   check "Agente responde" http_ok "http://127.0.0.1:$AGENT_PORT/health"
-  check "Vigilante activo" svc_active sad-watchdog
+  check "Elector activo" svc_active sad-elector
   check "Replicador activo" svc_active sad-replicator
+  check_soft "etcd con mayoría, primario: $(current_primary || echo ninguno)" elector status
   if is_primary_local; then
     check "NFS exportando en lectura y escritura" exports_has rw
     check "sad-app responde en /healthz" http_ok "http://127.0.0.1:$APP_PORT/healthz"
@@ -1102,7 +1080,10 @@ validate_cliente() {
   check "Agente responde" http_ok "http://127.0.0.1:$AGENT_PORT/health"
   check "Vigilante del montaje activo" svc_active sad-mount-watch
   check_soft "Todos los nodos resuelven por nombre" all_names_resolve
+  is_etcd_member "$1" && check "etcd activo en este nodo" svc_active etcd
+  check_soft "etcd con mayoría, primario: $(current_primary || echo ninguno)" elector status
   check_soft "Carpeta montada en $MOUNT_DIR" mountpoint -q "$MOUNT_DIR"
+  check_soft "Carpeta de lectura en $READ_MOUNT_DIR" mountpoint -q "$READ_MOUNT_DIR"
   check_soft "Se puede escribir en la carpeta" sh -c "touch $MOUNT_DIR/.setup-probe && rm -f $MOUNT_DIR/.setup-probe"
 }
 
@@ -1129,6 +1110,7 @@ cmd_install() {
   step_user
   step_code
   write_derived "$role" "$node"
+  step_legacy_cleanup "$role"
   step_identity "$node"
   step_lan "$node"
   step_overlay "$node"
@@ -1136,12 +1118,19 @@ cmd_install() {
   step_ssh_keys "$node"
   case "$role" in
     servidor)
+      is_etcd_member "$node" && step_etcd "$node"
       write_agent "$role" "$node"
-      step_role_state "$node"
-      step_nfs_server; step_app "$node"; step_seed_users
-      step_replicator; step_watchdog; validate_server "$node"
+      step_nfs_server; step_app "$node"
+      step_replicator; step_elector
+      if [ "$node" = "$(first_server)" ] && ! is_primary_local; then
+        wait_for "$node ganó la elección y es el primario" 30 is_primary_local || true
+        is_primary_local && wait_for "sad-app responde" 25 curl -fsS "http://127.0.0.1:$APP_PORT/healthz" || true
+      fi
+      step_seed_users
+      validate_server "$node"
       [ -f $CONF_DIR/credenciales.txt ] && is_primary_local && { echo; info "$(cat $CONF_DIR/credenciales.txt)"; } ;;
     cliente)
+      is_etcd_member "$node" && step_etcd "$node"
       write_agent "cliente" "$node"; step_client; validate_cliente "$node" ;;
   esac
   finish
@@ -1160,6 +1149,10 @@ cmd_doctor() {
     check "Tailscale conectado" sh -c '[ "$(tailscale status --json | jq -r .BackendState)" = Running ]'
     info "Nombre en Tailscale: $(tailscale status --json 2>/dev/null | jq -r .Self.HostName)  IP $(tailscale ip -4 2>/dev/null | head -1)"
   fi
+  step "Consenso con etcd"
+  is_etcd_member "$(hostname)" && check "etcd activo en este nodo" svc_active etcd
+  if elector status >/dev/null 2>&1; then elector status | sed 's/^/     /'; ok "etcd tiene mayoría"
+  else warn "etcd sin mayoría. Deben estar encendidos al menos dos de: $ETCD_MEMBERS"; fi
   step "Los demás nodos"
   printf '     %-12s %-16s %-6s %-6s %-6s %s\n' NODO IP PING SSH AGENTE "DESFASE RELOJ"
   for n in $ALL_NODES; do
@@ -1180,6 +1173,8 @@ cmd_doctor() {
 cmd_status() {
   need_root "$@"; load_config
   [ -f "$DERIVED" ] || die "Este equipo todavía no se configuró con setup.sh."
+  elector status || true
+  echo
   printf '%-12s %-10s %-9s %-16s %-8s %s\n' NODO ROL RED IP RETRASO SERVICIOS
   local n j
   for n in $ALL_NODES; do
@@ -1257,6 +1252,18 @@ cmd_test() {
   done
   rm -f "$MOUNT_DIR/$f"
 
+  if mountpoint -q "$READ_MOUNT_DIR"; then
+    s="$(cat /run/sad-lectura 2>/dev/null || echo '?')"
+    f="lectura-$$.txt"; t0="$(date +%s.%N)"; lag=""
+    echo "$t0" > "$MOUNT_DIR/$f"
+    for _ in $(seq 1 100); do
+      if [ "$(cat "$READ_MOUNT_DIR/$f" 2>/dev/null)" = "$t0" ]; then t1="$(date +%s.%N)"; lag="$(echo "$t1 - $t0" | bc -l | xargs printf '%.1f')"; break; fi
+      sleep 0.2
+    done
+    rm -f "$MOUNT_DIR/$f"
+    [ -n "$lag" ] && res "Lectura desde la réplica $s" ok "visible en $READ_MOUNT_DIR en ${lag} s" || res "Lectura desde la réplica $s" fail "no apareció en $READ_MOUNT_DIR"
+  else warn "La carpeta de lectura $READ_MOUNT_DIR no está montada, se omite esa prueba"; fi
+
   echo; info "Primario actual: ${primary:-ninguno}. Resultados guardados en $out"
   printf '     %d pruebas correctas, %d fallidas\n' "$pass" "$fail"
   [ "$fail" -eq 0 ] || return 1
@@ -1266,38 +1273,57 @@ cmd_simulate_failure() {
   need_root "$@"; load_config
   is_primary_local || die "Este servidor no es el primario. Ejecútalo en el primario, mira  ./setup.sh status"
   step "Simulando la caída de $(hostname)"
-  for s in sad-watchdog sad-replicator sad-app nfs-server sad-agent; do systemctl stop "$s" && ok "Detenido $s"; done
+  # El elector se detiene sin soltar el contrato, como en una caída real. etcd lo vence en
+  # LEASE_TTL segundos y el siguiente servidor con datos al día asume.
+  for s in sad-elector sad-replicator sad-app nfs-server sad-agent; do systemctl stop "$s" && ok "Detenido $s"; done
   log_event "caída simulada de $(hostname)"
-  info "El siguiente servidor de la sucesión asumirá en unos segundos. Para volver, ejecuta ./setup.sh failback"
+  info "El contrato vence en ${LEASE_TTL} s y otro servidor asume. Para volver, ejecuta ./setup.sh failback"
   if [ "${2:-}" = "--poweroff" ]; then info "Apagando el equipo"; systemctl poweroff; fi
 }
 
+# Cede el puesto de primario. El elector suelta el contrato en etcd, se pone en solo
+# lectura y espera un rato antes de volver a postularse.
 cmd_demote() {
   need_root "$@"; load_config
   # shellcheck disable=SC1090
   . "$DERIVED"
   step "Devolviendo $NODE_NAME a réplica"
-  systemctl disable --now sad-app 2>/dev/null || true
-  rm -f "$STATE_DIR/primary"
-  sed -i "\|^$EXPORT_DIR |s/(rw,/(ro,/" /etc/exports
-  exportfs -ra
-  sed -i 's/^NODE_ROLE=.*/NODE_ROLE=replica/' "$APP_DIR/.env"
+  if ! is_primary_local; then ok "$NODE_NAME ya es réplica"; return 0; fi
+  if svc_active sad-elector && elector stepdown; then ok "$NODE_NAME cedió el puesto en etcd"
+  else
+    systemctl disable --now sad-app 2>/dev/null || true
+    rm -f "$STATE_DIR/primary"
+    sed -i "\|^$EXPORT_DIR |s/(rw,/(ro,/" /etc/exports
+    exportfs -ra
+    sed -i 's/^NODE_ROLE=.*/NODE_ROLE=replica/' "$APP_DIR/.env"
+    warn "El elector no respondió. Pasé a réplica a mano."
+  fi
   log_event "$NODE_NAME vuelve a ser réplica"
   ok "$NODE_NAME es réplica de nuevo"
 }
 
+# Devuelve el puesto de primario a este servidor sin perder lo escrito mientras estuvo caído.
+#  1. Reserva el puesto en etcd para este servidor, así ningún otro se postula.
+#  2. Pide al primario actual que ceda. Desde ese momento nadie escribe.
+#  3. Copia de él los archivos y la base de datos.
+#  4. Suelta la espera y el elector de este servidor gana la elección.
 cmd_failback() {
   need_root "$@"; load_config
   # shellcheck disable=SC1090
   . "$DERIVED"
   local p a tmp="/tmp/sad-primary.db"
   step "Failback, $NODE_NAME recupera el servicio"
+  elector status >/dev/null 2>&1 || die "etcd no tiene mayoría. Sin consenso no se puede cambiar de primario."
   systemctl start nfs-server sad-agent 2>/dev/null || true
   p="$(current_primary || true)"
-  if [ -n "$p" ] && [ "$p" != "$NODE_NAME" ]; then
+  if [ "$p" = "$NODE_NAME" ]; then ok "$NODE_NAME ya es el primario"; FAILS=0; validate_server "$NODE_NAME"; finish; return; fi
+  touch "$STATE_DIR/hold"
+  elector reserve "$NODE_NAME" 120 && ok "Puesto reservado en etcd para $NODE_NAME"
+  systemctl start sad-elector sad-replicator 2>/dev/null || true
+  if [ -n "$p" ]; then
     a="$(addr_of "$p")"
-    peer_ssh_ok "$a" || die "No puedo conectar por SSH con $p."
-    systemctl stop sad-replicator sad-app sad-watchdog 2>/dev/null || true
+    peer_ssh_ok "$a" || { rm -f "$STATE_DIR/hold"; elector unreserve || true; die "No puedo conectar por SSH con $p."; }
+    rsh "$p" "sudo $APP_DIR/setup.sh demote" >/dev/null && ok "$p cedió el puesto, ya nadie escribe"
     info "Trayendo de $p lo escrito durante la caída..."
     rsh "$p" "$APP_DIR/.venv/bin/python - $APP_DIR/data/sad.db $tmp" <<'PY'
 import sqlite3, sys
@@ -1305,18 +1331,13 @@ src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2]); src.back
 PY
     as_user scp $SSH_OPTS -q "$LAB_USER@$a:$tmp" "$tmp"
     as_user rsync -a --delete --exclude '.cluster/heartbeat*' --exclude '.cluster/sad.db*' -e "ssh $SSH_OPTS" "$LAB_USER@$a:$EXPORT_DIR/" "$EXPORT_DIR/"
-    rm -f "$APP_DIR/data/sad.db" "$APP_DIR/data/sad.db-wal" "$APP_DIR/data/sad.db-shm"
-    install -o "$LAB_USER" -g "$LAB_USER" -m 640 "$tmp" "$APP_DIR/data/sad.db"; rm -f "$tmp"
+    # El elector restaura la base desde .cluster al asumir.
+    install -o "$LAB_USER" -g "$LAB_USER" -m 640 "$tmp" "$EXPORT_DIR/.cluster/sad.db"; rm -f "$tmp"
     ok "Archivos y base de datos copiados desde $p"
-    rsh "$p" "sudo $APP_DIR/setup.sh demote" >/dev/null && ok "$p vuelve a ser réplica"
-  elif [ "$p" = "$NODE_NAME" ]; then ok "$NODE_NAME ya es el primario"
-  else warn "Ningún servidor responde como primario. $NODE_NAME asume con lo que tiene."; fi
-  date +%s.%N > "$STATE_DIR/primary"
-  sed -i "\|^$EXPORT_DIR |s/(ro,/(rw,/" /etc/exports
-  exportfs -ra
-  sed -i 's/^NODE_ROLE=.*/NODE_ROLE=primario/' "$APP_DIR/.env"
-  systemctl enable sad-app >/dev/null 2>&1
-  systemctl start nfs-server sad-app sad-replicator sad-agent sad-watchdog
+  else warn "Ningún servidor es primario. $NODE_NAME asume con lo que tiene."; fi
+  rm -f "$STATE_DIR/hold"
+  wait_for "$NODE_NAME ganó la elección" 30 is_primary_local || { elector unreserve || true; die "$NODE_NAME no ganó la elección. Revisa  journalctl -u sad-elector"; }
+  systemctl start sad-app sad-replicator sad-agent 2>/dev/null || true
   wait_for "sad-app responde" 25 curl -fsS "http://127.0.0.1:$APP_PORT/healthz" || true
   log_event "failback completado, $NODE_NAME es primario"
   FAILS=0; validate_server "$NODE_NAME"; finish

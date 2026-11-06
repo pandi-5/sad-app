@@ -5,6 +5,8 @@
 .DESCRIPTION
   Instala Ubuntu Server de forma desatendida en servidor-a, servidor-b, servidor-c y servidor-d.
   Los tres clientes son las máquinas WSL de cada integrante, ver cliente-wsl.cmd.
+  En el despliegue distribuido cada integrante crea solo la suya con  -Solo servidor-x,
+  o con servidor-vm.cmd, que además la instala.
   Cada máquina tiene una tarjeta NAT, que basta para Tailscale real y para entrar por SSH
   desde Windows mediante un puerto local. Con -RedLocal se agrega una segunda tarjeta solo
   anfitrión, necesaria únicamente para OVERLAY_MODE=sim o none.
