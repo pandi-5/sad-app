@@ -1,34 +1,54 @@
 # Configuración del laboratorio de archivos distribuidos.
 # setup.sh la copia a /etc/sad-lab/lab.conf la primera vez. Edítala allí.
-# Todos los nodos deben usar los mismos valores.
+# Todos los nodos deben usar exactamente los mismos valores.
 
-# Usuario Linux que usa el laboratorio en todas las máquinas.
-# Si se deja vacío se usa el usuario que ejecuta setup.sh con sudo.
-LAB_USER=""
+# ---------- Nodos ----------
+# El orden de SERVERS es el orden de sucesión. Si cae el primario asume el siguiente vivo.
+SERVERS="servidor-a servidor-b servidor-c servidor-d"
+# Los clientes también son testigos. Con tres, la mayoría es dos.
+CLIENTS="cliente-1 cliente-2 cliente-3"
+# Testigos que deben confirmar la caída. Vacío usa la mayoría de CLIENTS.
+WITNESS_QUORUM=""
 
-# ---------- Red real entre las máquinas ----------
-# Direcciones fijas de la segunda tarjeta de red, la de solo anfitrión de VirtualBox.
-LAN_A=192.168.56.11
-LAN_B=192.168.56.12
-LAN_C1=192.168.56.21
-LAN_C2=192.168.56.22
-LAN_CIDR=24
-# yes configura la IP fija con netplan en la segunda tarjeta. no la deja como está.
-LAN_CONFIGURE=yes
+# Usuario Linux común que setup.sh crea en todos los nodos. Debe ser el mismo en todos.
+LAB_USER="sadlab"
+# Clave de ese usuario. Solo se usa para el primer intercambio de llaves SSH.
+SSH_PASSWORD="CambiaEstaClave123"
+# Carpeta donde setup.sh instala el proyecto en cada nodo. Igual en todos.
+APP_DIR=/opt/sad-app
 
 # ---------- Red privada superpuesta ----------
-# sim   Simula Tailscale. Crea la interfaz tssim0 con direcciones del rango
-#       100.64.0.0/10 y rutas hacia los demás nodos. Sirve cuando las máquinas
-#       virtuales comparten un mismo equipo físico. No es Tailscale real.
-# real  Instala Tailscale y une el nodo a tu red. Define TS_AUTHKEY o autoriza
-#       el nodo con el enlace que imprime tailscale up.
-# none  No usa red superpuesta. Los nodos se hablan por las direcciones LAN.
-OVERLAY_MODE=sim
+# real  Tailscale real. Cada nodo se une a la misma red de Tailscale y setup.sh
+#       escribe en /etc/hosts la IP de cada nodo, sin depender de MagicDNS.
+# sim   Simula Tailscale con la interfaz tssim0. Solo para VM en un mismo equipo.
+# none  Sin red superpuesta. Los nodos se hablan por las direcciones LAN.
+OVERLAY_MODE=real
+# Llave de autorización de Tailscale, reutilizable. Se crea en
+# https://login.tailscale.com/admin/settings/keys. Vacía pide autorizar con un enlace.
+TS_AUTHKEY=""
+# Opcional. Fija a mano la IP de Tailscale de un nodo si no aparece con su nombre.
+# TSIP_A=100.101.102.103
+# TSIP_C1=100.101.102.104
+
+# Direcciones solo para OVERLAY_MODE=sim
 OV_A=100.64.0.11
 OV_B=100.64.0.12
+OV_C=100.64.0.13
+OV_D=100.64.0.14
 OV_C1=100.64.0.21
 OV_C2=100.64.0.22
-TS_AUTHKEY=""
+OV_C3=100.64.0.23
+
+# Direcciones solo para OVERLAY_MODE=sim o none, segunda tarjeta de VirtualBox
+LAN_A=192.168.56.11
+LAN_B=192.168.56.12
+LAN_C=192.168.56.13
+LAN_D=192.168.56.14
+LAN_C1=192.168.56.21
+LAN_C2=192.168.56.22
+LAN_C3=192.168.56.23
+LAN_CIDR=24
+LAN_CONFIGURE=yes
 
 # ---------- Carpeta compartida ----------
 EXPORT_DIR=/srv/compartido
@@ -41,15 +61,12 @@ ADMIN_USER=coordinador
 # Vacío genera una contraseña aleatoria que se guarda en /etc/sad-lab/credenciales.txt
 ADMIN_PASS=""
 # Usuarios de prueba con permiso de lectura y escritura, formato usuario:clave separados por comas.
-SEED_USERS="cliente1:ClaveCliente123,cliente2:ClaveCliente456"
+SEED_USERS="cliente1:ClaveCliente123,cliente2:ClaveCliente456,cliente3:ClaveCliente789"
 
 # ---------- Réplica y conmutación ----------
 REPL_INTERVAL=2
-# Fallos seguidos de A antes de que B consulte a los testigos.
+# Fallos seguidos sin primario antes de consultar a los testigos.
 WATCH_FAILS=3
 
-# ---------- Comodidad de laboratorio ----------
-# Clave SSH del usuario del laboratorio, solo para intercambiar llaves entre nodos.
-SSH_PASSWORD=""
 # yes permite sudo sin contraseña al usuario del laboratorio, necesario para failback.
 SUDO_NOPASSWD=yes

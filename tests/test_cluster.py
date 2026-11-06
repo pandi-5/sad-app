@@ -166,3 +166,19 @@ def test_agent_probe_unknown_target(monkeypatch, tmp_path):
     assert agent.probe("a")["reachable"] is True
     assert agent.probe("muerto")["reachable"] is False
     server.shutdown()
+
+
+def test_agent_reports_primary_epoch(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("STATE_DIR", str(state))
+    monkeypatch.setenv("FIRST_SERVER", "servidor-a")
+    agent = load_agent(monkeypatch, tmp_path, "servidor")
+    assert agent.status()["primary_epoch"] is None
+    (state / "primary").write_text("1793000000.5\n")
+    data = agent.status()
+    assert data["primary_epoch"] == 1793000000.5
+    assert data["promoted"] is True
+    monkeypatch.setattr(agent, "run", lambda cmd, timeout=3: "active")
+    (tmp_path / "exports").write_text(f"{tmp_path / 'share'} 100.64.0.0/10(rw,sync)\n")
+    assert agent.effective_role() == "primario"

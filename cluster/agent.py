@@ -10,7 +10,7 @@ Solo usa la biblioteca estándar. Responde en el puerto 5100.
 
 Variables de entorno, tomadas de /etc/sad-lab/lab.conf mediante systemd:
   NODE_NAME, NODE_ROLE, EXPORT_DIR, MOUNT_DIR, AGENT_PORT,
-  PROBE_TARGETS  ejemplo  a=100.64.0.11:5000,nfs=100.64.0.11:2049
+  PROBE_TARGETS  ejemplo  servidor-a=servidor-a:2049,servidor-b=servidor-b:2049
 """
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ EXPORT_DIR = os.environ.get("EXPORT_DIR", "/srv/compartido")
 MOUNT_DIR = os.environ.get("MOUNT_DIR", "/mnt/compartido")
 EXPORTS_FILE = os.environ.get("EXPORTS_FILE", "/etc/exports")
 PORT = int(os.environ.get("AGENT_PORT", "5100"))
+STATE_DIR = os.environ.get("STATE_DIR", "/var/lib/sad-lab")
+FIRST_SERVER = os.environ.get("FIRST_SERVER", "servidor-a")
 SERVICES = ["nfs-server", "sad-app", "sad-replicator", "sad-watchdog", "sad-mount-watch"]
 BOOT = time.time()
 
@@ -80,8 +82,20 @@ def exports() -> list[str]:
     return [ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")]
 
 
+def is_server_role() -> bool:
+    return NODE_ROLE == "servidor" or NODE_ROLE.startswith("servidor-")
+
+
+def primary_epoch() -> float | None:
+    """Hora en que este servidor asumió como primario. Sirve para resolver un cerebro dividido."""
+    try:
+        return float(open(os.path.join(STATE_DIR, "primary")).read().strip())
+    except (OSError, ValueError):
+        return None
+
+
 def effective_role() -> str:
-    if NODE_ROLE not in ("servidor-a", "servidor-b"):
+    if not is_server_role():
         return "cliente" if NODE_ROLE == "cliente" else NODE_ROLE
     if run(["systemctl", "is-active", "nfs-server"]) != "active":
         return "detenido"
@@ -147,7 +161,8 @@ def status() -> dict:
         "mounts": mounts(),
         "heartbeat_age": age,
         "heartbeat_from": hb["node"] if hb else None,
-        "promoted": os.path.exists("/var/lib/sad-lab/promoted"),
+        "primary_epoch": primary_epoch(),
+        "promoted": primary_epoch() is not None and NODE_NAME != FIRST_SERVER,
         "disk": disk(),
     }
 

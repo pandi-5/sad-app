@@ -21,3 +21,6 @@ storage/*
 logs/
 capturas/
 cola/
+
+# Configuración real del laboratorio, con llaves y claves
+deploy/lab.conf

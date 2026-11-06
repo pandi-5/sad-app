@@ -1,4 +1,4 @@
-# Reúne información del equipo para preparar el despliegue. No modifica nada.
+﻿# Reúne información del equipo para preparar el despliegue. No modifica nada.
 $ErrorActionPreference = "Continue"
 $logDir = Join-Path $PSScriptRoot "..\..\logs"; New-Item -ItemType Directory -Force $logDir | Out-Null
 $logDir = (Resolve-Path $logDir).Path

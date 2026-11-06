@@ -1,13 +1,14 @@
-<#
+﻿<#
 .SYNOPSIS
-  Crea las cuatro máquinas virtuales del laboratorio en VirtualBox con Ubuntu Server.
+  Crea las cuatro máquinas virtuales servidoras del laboratorio en VirtualBox con Ubuntu Server.
 
 .DESCRIPTION
-  Instala Ubuntu Server de forma desatendida en servidor-a, servidor-b, cliente-1 y cliente-2.
-  Cada máquina tiene dos tarjetas de red.
-    1. NAT, para tener internet y para entrar por SSH desde Windows mediante un puerto local.
-    2. Solo anfitrión, para que las máquinas se vean entre sí con IP fijas que fija setup.sh.
-  Puertos locales  SSH 2201 a 2204 y web 8001 y 8002 para servidor-a y servidor-b.
+  Instala Ubuntu Server de forma desatendida en servidor-a, servidor-b, servidor-c y servidor-d.
+  Los tres clientes son las máquinas WSL de cada integrante, ver cliente-wsl.cmd.
+  Cada máquina tiene una tarjeta NAT, que basta para Tailscale real y para entrar por SSH
+  desde Windows mediante un puerto local. Con -RedLocal se agrega una segunda tarjeta solo
+  anfitrión, necesaria únicamente para OVERLAY_MODE=sim o none.
+  Puertos locales  SSH 2201 a 2204 y web 8001 a 8004.
   La llave pública SSH de Windows se instala durante la instalación, así que no hay contraseñas.
 #>
 param(
@@ -17,7 +18,9 @@ param(
   [string]$Password = "lab",
   [switch]$Rebuild,
   [string[]]$Solo = @(),
-  [int]$EsperaMinutos = 60
+  [int]$EsperaMinutos = 60,
+  [int]$RamMb = 1536,
+  [switch]$RedLocal
 )
 $ErrorActionPreference = "Stop"
 $logDir = Join-Path $PSScriptRoot "..\..\logs"; New-Item -ItemType Directory -Force $logDir | Out-Null
@@ -75,16 +78,19 @@ $tplPath = Join-Path $logDir "autoinstall-user-data.generado"
 [IO.File]::WriteAllText($tplPath, ($tpl -replace "`r`n", "`n"), (New-Object Text.UTF8Encoding($false)))
 Write-Host "Plantilla generada en $tplPath"
 
-# Red solo anfitrión
-$hostonly = (Vbm list hostonlyifs | Select-String "^Name:\s+(.+)$" | Select-Object -First 1).Matches.Groups[1].Value.Trim()
-if (-not $hostonly) { $null = Vbm hostonlyif create; $hostonly = (Vbm list hostonlyifs | Select-String "^Name:\s+(.+)$" | Select-Object -First 1).Matches.Groups[1].Value.Trim() }
-Write-Host "Adaptador solo anfitrión: $hostonly"
+# Red solo anfitrión, solo si se pide
+$hostonly = ""
+if ($RedLocal) {
+  $hostonly = (Vbm list hostonlyifs | Select-String "^Name:\s+(.+)$" | Select-Object -First 1).Matches.Groups[1].Value.Trim()
+  if (-not $hostonly) { $null = Vbm hostonlyif create; $hostonly = (Vbm list hostonlyifs | Select-String "^Name:\s+(.+)$" | Select-Object -First 1).Matches.Groups[1].Value.Trim() }
+  Write-Host "Adaptador solo anfitrión: $hostonly"
+}
 
 $nodes = @(
-  @{ Name = "sad-servidor-a"; Host = "servidor-a"; Ram = 2048; Cpu = 2; DiskMb = 20480; Port = 2201; Web = 8001 },
-  @{ Name = "sad-servidor-b"; Host = "servidor-b"; Ram = 2048; Cpu = 2; DiskMb = 20480; Port = 2202; Web = 8002 },
-  @{ Name = "sad-cliente-1";  Host = "cliente-1";  Ram = 2048; Cpu = 1; DiskMb = 10240; Port = 2203; Web = 0 },
-  @{ Name = "sad-cliente-2";  Host = "cliente-2";  Ram = 2048; Cpu = 1; DiskMb = 10240; Port = 2204; Web = 0 }
+  @{ Name = "sad-servidor-a"; Host = "servidor-a"; Ram = $RamMb; Cpu = 1; DiskMb = 15360; Port = 2201; Web = 8001 },
+  @{ Name = "sad-servidor-b"; Host = "servidor-b"; Ram = $RamMb; Cpu = 1; DiskMb = 15360; Port = 2202; Web = 8002 },
+  @{ Name = "sad-servidor-c"; Host = "servidor-c"; Ram = $RamMb; Cpu = 1; DiskMb = 15360; Port = 2203; Web = 8003 },
+  @{ Name = "sad-servidor-d"; Host = "servidor-d"; Ram = $RamMb; Cpu = 1; DiskMb = 15360; Port = 2204; Web = 8004 }
 )
 
 $Solo = @($Solo | ForEach-Object { $_ -split "," } | Where-Object { $_ })
@@ -106,8 +112,10 @@ foreach ($n in $nodes) {
     Write-Host "`n== Creando $($n.Name), $($n.Ram) MB, $($n.Cpu) CPU, $([int]($n.DiskMb/1024)) GB =="
     $null = Vbm createvm --name $n.Name --ostype Ubuntu_64 --basefolder $VmDir --register
     $null = Vbm modifyvm $n.Name --memory $n.Ram --cpus $n.Cpu --vram 16 --graphicscontroller vmsvga --nic1 nat
-    if (-not (VbmTry modifyvm $n.Name --nic2 hostonly --host-only-adapter2 $hostonly)) {
-      $null = Vbm modifyvm $n.Name --nic2 hostonly --hostonlyadapter2 $hostonly
+    if ($hostonly) {
+      if (-not (VbmTry modifyvm $n.Name --nic2 hostonly --host-only-adapter2 $hostonly)) {
+        $null = Vbm modifyvm $n.Name --nic2 hostonly --hostonlyadapter2 $hostonly
+      }
     }
     $null = Vbm modifyvm $n.Name --natpf1 "ssh,tcp,127.0.0.1,$($n.Port),,22"
     if ($n.Web -gt 0) { $null = Vbm modifyvm $n.Name --natpf1 "web,tcp,127.0.0.1,$($n.Web),,5000" }
@@ -140,5 +148,5 @@ foreach ($n in $nodes) {
     Start-Sleep 20
   }
 }
-Write-Host "`nLas cuatro máquinas están listas. Usuario $User."
+Write-Host "`nLos cuatro servidores están listos. Usuario $User. Sigue con 3-desplegar.cmd."
 try { Stop-Transcript | Out-Null } catch { }

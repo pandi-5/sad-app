@@ -1,4 +1,4 @@
-# Funciones compartidas por desplegar.ps1 y escenario.ps1. Se importa con  . .\comun.ps1
+﻿# Funciones compartidas por desplegar.ps1 y escenario.ps1. Se importa con  . .\comun.ps1
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $OutputEncoding = [Text.Encoding]::UTF8
@@ -7,17 +7,27 @@ $script:Repo   = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $script:LogDir = Join-Path $script:Repo "logs";     New-Item -ItemType Directory -Force $script:LogDir | Out-Null
 $script:CapDir = Join-Path $script:Repo "capturas"; New-Item -ItemType Directory -Force $script:CapDir | Out-Null
 $script:User   = "lab"
+# Servidores, máquinas virtuales de este equipo. Se entra por SSH a un puerto local.
 $script:Nodos  = @(
   @{ Host = "servidor-a"; Port = 2201; Arg = "servidor-a" },
   @{ Host = "servidor-b"; Port = 2202; Arg = "servidor-b" },
-  @{ Host = "cliente-1";  Port = 2203; Arg = "cliente 1" },
-  @{ Host = "cliente-2";  Port = 2204; Arg = "cliente 2" }
+  @{ Host = "servidor-c"; Port = 2203; Arg = "servidor-c" },
+  @{ Host = "servidor-d"; Port = 2204; Arg = "servidor-d" }
 )
+# Clientes, máquinas WSL de cada integrante. Se llega a ellos por Tailscale saltando desde servidor-a.
+$script:Clientes = @("cliente-1", "cliente-2", "cliente-3")
+$script:Setup = "sudo /opt/sad-app/setup.sh"
 $script:SshOpts = @("-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=NUL","-o","LogLevel=ERROR","-o","BatchMode=yes","-o","ConnectTimeout=8")
 function PortDe($host_) { ($script:Nodos | Where-Object { $_.Host -eq $host_ }).Port }
 
 # ---------- ejecución remota ----------
 function Remoto([string]$nodo, [string]$cmd, [switch]$Tty, [string]$Log = "") {
+  if ($script:Clientes -contains $nodo) {
+    # El cliente no tiene puerto local. Se ejecuta desde servidor-a como sadlab por Tailscale.
+    $q = $cmd -replace "'", "'\''"
+    $cmd = "sudo -u sadlab ssh -tt -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new sadlab@$nodo '$q'"
+    $nodo = "servidor-a"
+  }
   $port = PortDe $nodo
   $args_ = @() + $script:SshOpts
   if ($Tty) { $args_ += "-tt" }
