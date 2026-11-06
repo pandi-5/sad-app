@@ -175,55 +175,109 @@ run.py               servidor de desarrollo
 
 ## Laboratorio distribuido con réplica
 
-Además de la web, el repositorio incluye un despliegue de cuatro nodos para estudiar
-sistemas de archivos distribuidos. Se instala con un solo script, `setup.sh`.
+Además de la web, el repositorio incluye un despliegue de siete nodos para estudiar
+sistemas de archivos distribuidos: cuatro servidores y tres clientes unidos por Tailscale.
+Se instala con un solo script, `setup.sh`.
 
 ```text
-  cliente-1 ─┐                              ┌─ servidor-a  primario, NFS lectura y escritura, sad-app
-             ├─ red privada 100.64.0.0/10 ──┤        │ rsync cada 2 s, latido y base de datos
-  cliente-2 ─┘                              └─ servidor-b  réplica, NFS solo lectura, vigilante
+                         red privada Tailscale 100.64.0.0/10
+  cliente-1 (WSL) ─┐                                   ┌─ servidor-a  primario, NFS lectura y escritura, sad-app
+  cliente-2 (WSL) ─┼── montan NFS del primario ────────┼─ servidor-b  réplica, primera en la sucesión
+  cliente-3 (WSL) ─┘   y votan como testigos           ├─ servidor-c  réplica, segunda en la sucesión
+                                                       └─ servidor-d  réplica, tercera en la sucesión
+               el primario copia con rsync cada 2 s a las tres réplicas, con latido y base de datos
 ```
 
-| Rol | Qué hace |
-| --- | --- |
-| `servidor-a` | Exporta `/srv/compartido` por NFS, ejecuta `sad-app` con su almacenamiento en la carpeta compartida y replica hacia B. |
-| `servidor-b` | Recibe la réplica. Su vigilante promueve a B si A cae y los testigos, los clientes, confirman la caída. |
-| `cliente` | Monta la carpeta desde el servidor que esté vivo y vuelve a montar solo si cambia el primario. |
+| Rol | Dónde corre | Qué hace |
+| --- | --- | --- |
+| `servidor-a` a `servidor-d` | VM de VirtualBox con Ubuntu Server | Exportan `/srv/compartido` por NFS. El primario lo exporta con escritura, ejecuta `sad-app` y replica hacia los demás. Las réplicas lo exportan en solo lectura y vigilan. |
+| `cliente 1` a `cliente 3` | WSL en el computador de cada integrante | Montan la carpeta desde el servidor que esté vivo, vuelven a montar si cambia el primario y responden como testigos. |
+
+Los servidores van en máquinas virtuales porque el kernel de WSL no trae el servidor NFS.
+Los clientes sí pueden ir en WSL.
+
+### Sucesión y testigos
+
+Cada servidor ejecuta un vigilante. Si una réplica no encuentra un primario vivo durante
+`WATCH_FAILS` comprobaciones seguidas:
+
+1. Si algún servidor anterior en la sucesión sigue vivo, espera, porque le toca a él.
+2. Si todos los anteriores están caídos, pregunta a los tres testigos si los ven.
+3. Asume como primario solo si ningún testigo los ve y al menos `WITNESS_QUORUM`, por
+   defecto la mayoría, confirma la caída. Si algún testigo todavía los ve, el problema puede
+   ser su propia red y no hace nada.
+
+Al asumir, exporta con escritura, restaura la última copia de la base de datos, arranca
+`sad-app` y empieza a replicar hacia las demás réplicas. Cada primario guarda la hora en que
+asumió, su época. Si dos servidores llegan a creerse primarios, cede el de época más vieja,
+y mientras haya dos primarios nadie replica, para no pisar datos buenos con datos viejos.
 
 ### Uso
 
+Todos los nodos deben tener el mismo `deploy/lab.conf`. Créalo a partir de
+`deploy/lab.conf.example` y llena `TS_AUTHKEY` con una llave reutilizable de Tailscale y
+`SSH_PASSWORD` con una clave para el usuario común `sadlab`.
+
 ```bash
-git clone https://github.com/pandi-5/sad-app ~/sad-app && cd ~/sad-app
-sudo ./setup.sh servidor-a      # en la máquina A
-sudo ./setup.sh servidor-b      # en la máquina B
-sudo ./setup.sh cliente 1       # en el cliente 1
-sudo ./setup.sh cliente 2       # en el cliente 2
+# en cada servidor, primero servidor-a
+sudo ./setup.sh servidor-a
+sudo ./setup.sh servidor-b
+sudo ./setup.sh servidor-c
+sudo ./setup.sh servidor-d
+# en cada cliente WSL
+sudo ./setup.sh cliente 1
+sudo ./setup.sh cliente 2
+sudo ./setup.sh cliente 3
 ```
 
-Ejecútalo una segunda vez en cada máquina cuando las demás estén listas, para cerrar
+Ejecútalo una segunda vez en cada servidor cuando los clientes estén listos, para cerrar
 las llaves SSH pendientes. El script se puede repetir sin dañar nada. Al terminar valida
 el nodo y muestra una marca por cada comprobación.
 
 | Comando | Para qué sirve |
 | --- | --- |
-| `./setup.sh status` | Rol, red, retraso y servicios de los cuatro nodos. |
-| `./setup.sh test` | Desde un cliente. Acceso compartido, concurrencia con y sin bloqueo, y retraso de la réplica. |
-| `./setup.sh simulate-failure` | En A. Detiene NFS, la web y el replicador. B se promueve solo. |
-| `./setup.sh failback` | En A. Trae lo escrito en B, devuelve B a réplica y retoma el servicio. |
+| `./setup.sh doctor` | Diagnóstico de este equipo y tabla de los siete nodos con ping, SSH, agente y desfase del reloj. |
+| `./setup.sh status` | Rol, red, retraso y servicios de los siete nodos. |
+| `./setup.sh test` | Desde un cliente. Acceso compartido, concurrencia de los tres clientes con y sin bloqueo, y retraso hacia cada réplica. |
+| `./setup.sh simulate-failure` | En el primario. Lo detiene y el siguiente de la sucesión asume. |
+| `./setup.sh failback` | En el servidor que debe volver a ser primario. Trae lo escrito en el primario actual, lo devuelve a réplica y retoma el servicio. |
 
-La configuración está en `/etc/sad-lab/lab.conf`, plantilla en `deploy/lab.conf.example`.
+La configuración queda en `/etc/sad-lab/lab.conf` y el proyecto en `/opt/sad-app` en
+todos los nodos.
+
+### Problemas de la primera prueba con Tailscale real y cómo quedaron resueltos
+
+| Problema | Solución en `setup.sh` |
+| --- | --- |
+| La validación buscaba la IP simulada `100.64.0.11` y fallaba aunque Tailscale funcionara. | En modo real comprueba la IP que asigna Tailscale. |
+| MagicDNS no resolvía dentro de WSL y los nodos no se encontraban por nombre. | `tailscale up --accept-dns=false` y el servicio `sad-hosts` escribe en `/etc/hosts` la IP de cada nodo cada 30 s. |
+| Tailscale renombraba a `servidor-a-1` si ya existía una máquina vieja con ese nombre. | Los nodos se buscan por su nombre de equipo, no por el de MagicDNS, y el script avisa que borres la máquina vieja. |
+| Cada integrante tenía un usuario Linux distinto y fallaban SSH, rsync y el failback. | Usuario común `sadlab` en todos los nodos. |
+| El proyecto estaba en el home de cada uno y el failback llamaba rutas que no existían en el otro equipo. | El proyecto se instala siempre en `/opt/sad-app`. |
+| Ubuntu Server trae `PasswordAuthentication no` y `ssh-copy-id` nunca copiaba las llaves. | Se habilita la clave para el primer intercambio de llaves. |
+| WSL sin systemd no podía arrancar tailscaled ni los servicios. | El script activa systemd en `/etc/wsl.conf` y pide reiniciar WSL. |
+| El nombre del equipo en WSL se perdía al reiniciar. | Se fija en `/etc/wsl.conf`. |
+| El servidor NFS no arrancaba en WSL. | Los servidores van en VM. `setup.sh` lo detecta y lo explica antes de empezar. |
+| WSL se apagaba al cerrar la ventana y el testigo desaparecía. | `cliente-wsl.cmd` fija `vmIdleTimeout=-1` y deja WSL encendido. |
+| Archivos editados en Windows con CRLF rompían `setup.sh` y `lab.conf`. | `.gitattributes` fuerza LF, los scripts de Windows convierten al copiar y `setup.sh` limpia `lab.conf`. |
+| Relojes desfasados daban retrasos de réplica negativos o enormes. | Se activa NTP y `doctor` muestra el desfase de cada nodo. |
+| Una réplica podía asumir antes de que el primario existiera. | Una réplica nunca asume si no ha recibido ni un latido. |
 
 ### Red privada, real o simulada
 
 `OVERLAY_MODE=real` instala Tailscale y une el nodo a la red. `OVERLAY_MODE=sim` crea la
 interfaz `tssim0` con direcciones del rango 100.64.0.0/10 y rutas hacia los demás nodos.
-Sirve cuando las máquinas virtuales comparten un solo equipo físico. Es una simulación
+Sirve cuando todas las máquinas virtuales comparten un solo equipo físico. Es una simulación
 y no debe presentarse como Tailscale real. `OVERLAY_MODE=none` usa las direcciones LAN.
 
-### Máquinas virtuales en Windows
+### Scripts de Windows
 
-`deploy/windows/crear-vms.ps1` crea las cuatro VM en VirtualBox con Ubuntu Server de forma
-desatendida, y `deploy/windows/desplegar.ps1` copia el proyecto y ejecuta `setup.sh` en cada una.
+| Script | Para qué sirve |
+| --- | --- |
+| `deploy/windows/2-crear-vms.cmd` | Crea las cuatro VM servidoras en VirtualBox con Ubuntu Server de forma desatendida, 1,5 GB de RAM cada una. |
+| `deploy/windows/3-desplegar.cmd` | Copia el proyecto y `deploy/lab.conf` a los servidores y ejecuta `setup.sh` en cada uno. |
+| `deploy/windows/cliente-wsl.cmd` | En el computador de cada integrante. Deja WSL encendido e instala el cliente dentro de WSL. |
+| `deploy/windows/4-escenario.cmd` | Recorre el escenario completo con capturas: normal, caída de A, caída de B, failback. |
 
 ### Vista de clúster en la web
 

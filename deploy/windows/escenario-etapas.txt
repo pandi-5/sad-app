@@ -1,3 +1,6 @@
+Normal
+Web
 Caida
+Caida2
 WebCaida
 Failback

@@ -1,0 +1,11 @@
+# Los scripts que corren en Linux siempre con LF. Con CRLF fallaban setup.sh y lab.conf.
+*.sh        text eol=lf
+*.py        text eol=lf
+*.conf      text eol=lf
+*.example   text eol=lf
+*.txt       text eol=lf
+*.md        text eol=lf
+# Los scripts de Windows con CRLF.
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+deploy/windows/escenario-etapas.txt text eol=crlf
