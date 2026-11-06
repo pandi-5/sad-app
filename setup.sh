@@ -371,6 +371,37 @@ step_identity() {
   fi
 }
 
+# Limpia lo que dejó la versión anterior del laboratorio en máquinas que se reutilizan:
+# la red simulada tssim0, que choca con las rutas de Tailscale, los servicios de cliente en
+# una VM que ahora es servidor, el vigilante viejo y sus marcas.
+step_legacy_cleanup() {
+  local role="$1" changed=0
+  if [ "$OVERLAY_MODE" != "sim" ] && { [ -f /etc/systemd/system/sad-overlay-sim.service ] || ip link show tssim0 >/dev/null 2>&1; }; then
+    systemctl disable --now sad-overlay-sim >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/sad-overlay-sim.service "$LIB_DIR/overlay-sim.sh"
+    ip link del tssim0 2>/dev/null || true
+    ip -4 route show | awk '/^100\.64\./ && !/tailscale0/ {print $1}' | while read -r r; do ip route del "$r" 2>/dev/null || true; done
+    changed=1
+  fi
+  if [ "$role" = "servidor" ] && [ -f /etc/systemd/system/sad-mount-watch.service ]; then
+    systemctl disable --now sad-mount-watch sad-mount >/dev/null 2>&1 || true
+    umount -f -l "$MOUNT_DIR" 2>/dev/null || true
+    rm -f /etc/systemd/system/sad-mount.service /etc/systemd/system/sad-mount-watch.service
+    changed=1
+  fi
+  if [ -f /etc/systemd/system/sad-watchdog.service ]; then
+    systemctl disable --now sad-watchdog >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/sad-watchdog.service "$LIB_DIR/watchdog.sh"
+    changed=1
+  fi
+  [ -f "$STATE_DIR/promoted" ] && { rm -f "$STATE_DIR/promoted" "$STATE_DIR/initialized"; changed=1; }
+  if [ "$changed" -eq 1 ]; then
+    systemctl daemon-reload
+    step "Limpieza de la versión anterior"
+    ok "Red simulada, servicios viejos y marcas antiguas retirados"
+  fi
+}
+
 lab_iface() {  # segunda tarjeta, la que no tiene la ruta por defecto
   local def
   def="$(ip -4 route show default | awk '{print $5; exit}')"
@@ -1079,6 +1110,7 @@ cmd_install() {
   step_user
   step_code
   write_derived "$role" "$node"
+  step_legacy_cleanup "$role"
   step_identity "$node"
   step_lan "$node"
   step_overlay "$node"
