@@ -177,3 +177,16 @@ def test_derived_lists_servers_in_succession_order(tmp_path):
 def test_lab_conf_example_has_no_crlf():
     assert b"\r" not in (ROOT / "deploy" / "lab.conf.example").read_bytes()
     assert b"\r" not in (ROOT / "setup.sh").read_bytes()
+
+
+def test_default_etcd_has_five_members(tmp_path):
+    out = run_bash('echo "m:$(default_etcd_members)"; ETCD_MEMBERS="$(default_etcd_members)"; echo "q:$(etcd_quorum)"', tmp_path)
+    assert out.returncode == 0, out.stderr
+    assert "m:cliente-1 cliente-2 cliente-3 servidor-c servidor-d" in out.stdout
+    assert "q:3" in out.stdout
+
+
+def test_lab_conf_example_lists_five_etcd_members():
+    text = (ROOT / "deploy" / "lab.conf.example").read_text()
+    assert 'ETCD_MEMBERS="cliente-1 cliente-2 cliente-3 servidor-c servidor-d"' in text
+    assert "SNAPSHOT_KEEP=" in text

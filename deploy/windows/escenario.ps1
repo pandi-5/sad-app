@@ -53,6 +53,7 @@ if ($etapas -contains "Normal") {
   Evidencia "nfs-montaje-cliente-1" "cliente-1" "mount | grep compartido; df -h /mnt/compartido; ls -la /mnt/compartido"
   Evidencia "servicios-servidor-a" "servidor-a" "for s in nfs-server sad-app sad-replicator sad-elector sad-agent; do printf '%-16s %s\n' `$s `$(systemctl is-active `$s); done; echo; journalctl -u sad-replicator -n 8 --no-pager"
   Evidencia "replica-servidor-c" "servidor-c" "ls -la /srv/compartido/.cluster; cat /srv/compartido/.cluster/heartbeat; echo; journalctl -u sad-elector -n 4 --no-pager"
+  Evidencia "fotos-servidor-d" "servidor-d" "$S snapshots"
   Evidencia "estado-del-cluster" "cliente-1" "$S status"
   Evidencia "pruebas-punta-a-punta" "cliente-1" "$S test" 44
 }

@@ -16,6 +16,8 @@
 #   ./setup.sh simulate-failure       Simula la caída del primario, en el primario
 #   ./setup.sh failback               Devuelve el servicio a este servidor
 #   ./setup.sh demote                 Devuelve este servidor a réplica
+#   ./setup.sh snapshots [foto]       Fotos con historial de la carpeta, en un servidor
+#   ./setup.sh restore FOTO RUTA      Recupera un archivo o carpeta de una foto
 #
 # Es idempotente. Se puede ejecutar varias veces sin dañar nada.
 # La configuración vive en /etc/sad-lab/lab.conf, ver deploy/lab.conf.example.
@@ -85,8 +87,11 @@ load_config() {
   : "${SEED_USERS:=}" "${LAN_CONFIGURE:=yes}" "${ADMIN_PASS:=}" "${APP_DIR:=/opt/sad-app}"
   : "${ETCD_MEMBERS:=}" "${LEASE_TTL:=6}" "${RANK_DELAY:=2}" "${STALE_GRACE:=30}" "${READ_MOUNT_DIR:=/mnt/lectura}"
   ALL_NODES="$SERVERS $CLIENTS"
-  # etcd corre en los clientes por defecto. Tres miembros, la mayoría es dos.
-  [ -n "$ETCD_MEMBERS" ] || ETCD_MEMBERS="$CLIENTS"
+  : "${SNAPSHOT_NODES:=}" "${SNAPSHOT_EVERY:=15}" "${SNAPSHOT_KEEP:=96}"
+  # etcd por defecto en los clientes más los últimos servidores, hasta cinco miembros.
+  # Con cinco la mayoría es tres y aguanta dos caídas.
+  [ -n "$ETCD_MEMBERS" ] || ETCD_MEMBERS="$(default_etcd_members)"
+  [ -n "$SNAPSHOT_NODES" ] || SNAPSHOT_NODES="$SERVERS"
   LAB_HOME="$(getent passwd "$LAB_USER" | cut -d: -f6 || true)"
   [ -n "$LAB_HOME" ] || LAB_HOME="/home/$LAB_USER"
 }
@@ -120,6 +125,14 @@ addr_of() {
   esac
 }
 
+default_etcd_members() {
+  local nc ns want extra="" i=0 s
+  nc=$(wc -w <<<"$CLIENTS"); ns=$(wc -w <<<"$SERVERS")
+  want=$((5 - nc)); [ "$want" -gt 0 ] || want=0; [ "$want" -le "$ns" ] || want=$ns
+  for s in $SERVERS; do i=$((i + 1)); [ "$i" -gt $((ns - want)) ] && extra="$extra $s"; done
+  printf '%s' "$CLIENTS$extra" | xargs
+}
+etcd_quorum() { local n; n=$(wc -w <<<"$ETCD_MEMBERS"); echo $((n / 2 + 1)); }
 is_etcd_member() { case " $ETCD_MEMBERS " in *" $1 "*) return 0 ;; esac; return 1; }
 etcd_endpoints() { local m out=""; for m in $ETCD_MEMBERS; do out="$out${out:+,}http://$(addr_of "$m"):2379"; done; printf '%s' "$out"; }
 elector() { python3 "$APP_DIR/cluster/elector.py" "$@"; }
@@ -153,6 +166,7 @@ write_derived() {
     echo "READ_MOUNT_DIR=$READ_MOUNT_DIR"
     echo "ETCD_MEMBERS=\"$ETCD_MEMBERS\""
     echo "ETCD_ENDPOINTS=$(etcd_endpoints)"
+    echo "SNAPSHOT_KEEP=$SNAPSHOT_KEEP"
     echo "SERVERS=\"$SERVERS\""
     echo "CLIENTS=\"$CLIENTS\""
     for n in $ALL_NODES; do
@@ -840,6 +854,62 @@ EOF
   ok "Replicador activo, despierta con cada cambio y como máximo cada ${REPL_INTERVAL}s"
 }
 
+# Fotos de la carpeta con historial. La réplica copia al instante también los borrados y
+# los errores, así que no protege contra un error humano. Estas fotos sí: cada
+# SNAPSHOT_EVERY minutos se guarda una copia con rsync --link-dest, que solo ocupa espacio
+# por lo que cambió, y se conservan las últimas SNAPSHOT_KEEP.
+step_snapshots() {
+  local node="$1"
+  case " $SNAPSHOT_NODES " in *" $node "*) ;; *) return 0 ;; esac
+  step "Fotos de la carpeta con historial"
+  mkdir -p "$STATE_DIR/snapshots"
+  write_file $LIB_DIR/snapshot.sh 755 <<'EOF2' || true
+#!/usr/bin/env bash
+# Guarda una foto de la carpeta compartida. Los archivos que no cambiaron se enlazan.
+set -u
+. /etc/sad-lab/lab.conf
+. /etc/sad-lab/derived.conf
+DST=/var/lib/sad-lab/snapshots
+mkdir -p "$DST"
+[ -d "$EXPORT_DIR" ] || exit 0
+ts="$(date +%Y%m%d-%H%M)"
+[ -d "$DST/$ts" ] && exit 0
+last="$(find "$DST" -mindepth 1 -maxdepth 1 -type d -name '2*' ! -name '*.tmp' | sort | tail -1)"
+if rsync -a --delete --exclude '.cluster/heartbeat*' --exclude '.probe-*' \
+     ${last:+--link-dest="$last"} "$EXPORT_DIR/" "$DST/$ts.tmp/"; then
+  mv "$DST/$ts.tmp" "$DST/$ts"
+  echo "$(date '+%F %T') [fotos] foto $ts guardada" >> /var/log/sad-lab.log
+else
+  rm -rf "$DST/$ts.tmp"
+fi
+find "$DST" -mindepth 1 -maxdepth 1 -type d -name '2*' ! -name '*.tmp' | sort | head -n "-${SNAPSHOT_KEEP:-96}" | xargs -r rm -rf
+EOF2
+  write_file /etc/systemd/system/sad-snapshot.service <<EOF2 || true
+[Unit]
+Description=Foto de la carpeta compartida
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=$LIB_DIR/snapshot.sh
+EOF2
+  write_file /etc/systemd/system/sad-snapshot.timer <<EOF2 || true
+[Unit]
+Description=Foto de la carpeta compartida cada $SNAPSHOT_EVERY minutos
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=${SNAPSHOT_EVERY}min
+
+[Install]
+WantedBy=timers.target
+EOF2
+  systemctl daemon-reload
+  systemctl enable --now sad-snapshot.timer >/dev/null 2>&1
+  systemctl start sad-snapshot.service || true
+  ok "Una foto cada $SNAPSHOT_EVERY min, se guardan las últimas $SNAPSHOT_KEEP en $STATE_DIR/snapshots"
+}
+
 # Elección del primario con etcd. Ver cluster/elector.py.
 step_elector() {
   step "Elector del primario con etcd"
@@ -865,7 +935,7 @@ EOF
   systemctl restart sad-elector
   ok "Elector activo, contrato de ${LEASE_TTL}s con etcd en $ETCD_MEMBERS"
   if elector status >/dev/null 2>&1; then ok "etcd tiene mayoría"
-  else warn "etcd todavía no tiene mayoría. Instala al menos dos de: $ETCD_MEMBERS"; fi
+  else warn "etcd todavía no tiene mayoría. Deben estar listos $(etcd_quorum) de: $ETCD_MEMBERS"; fi
 }
 
 # etcd guarda quién es el primario. Usa Raft, así que sigue funcionando mientras la
@@ -875,6 +945,9 @@ step_etcd() {
   step "Miembro de etcd $node"
   apt_install etcd-server
   for m in $ETCD_MEMBERS; do cluster="$cluster${cluster:+,}$m=http://$(addr_of "$m"):2380"; done
+  # Cada conjunto de miembros tiene su propia carpeta de datos y su propio token. Así,
+  # al pasar de 3 a 5 miembros, etcd arranca un clúster nuevo en vez de mezclar los dos.
+  local tag; tag="$(printf '%s' "$cluster" | sha256sum | cut -c1-8)"
   # Un miembro solo no arranca hasta que llegue otro. Sin esto systemd lo mataba a los 90 s.
   mkdir -p /etc/systemd/system/etcd.service.d
   write_file /etc/systemd/system/etcd.service.d/sad-lab.conf 644 <<EOF || true
@@ -890,18 +963,18 @@ EOF
   if write_file /etc/default/etcd 644 <<EOF
 # Generado por setup.sh
 ETCD_NAME=$node
-ETCD_DATA_DIR=/var/lib/etcd/sad-lab
+ETCD_DATA_DIR=/var/lib/etcd/sad-lab-$tag
 ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
 ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
 ETCD_INITIAL_ADVERTISE_PEER_URLS=http://$(addr_of "$node"):2380
 ETCD_ADVERTISE_CLIENT_URLS=http://$(addr_of "$node"):2379
 ETCD_INITIAL_CLUSTER=$cluster
 ETCD_INITIAL_CLUSTER_STATE=new
-ETCD_INITIAL_CLUSTER_TOKEN=sad-lab
+ETCD_INITIAL_CLUSTER_TOKEN=sad-lab-$tag
 EOF
   then systemctl enable etcd >/dev/null 2>&1; systemctl restart etcd --no-block; ok "etcd configurado con $ETCD_MEMBERS"
   else systemctl enable --now etcd >/dev/null 2>&1 --no-block || true; ok "etcd ya configurado"; fi
-  wait_for "etcd con mayoría" 30 elector status || warn "etcd espera a los demás miembros. Se arma cuando haya dos."
+  wait_for "etcd con mayoría" 30 elector status || warn "etcd espera a los demás miembros. Se arma cuando haya $(etcd_quorum) de $(wc -w <<<"$ETCD_MEMBERS")."
 }
 
 # =============================================================================
@@ -1067,6 +1140,7 @@ validate_server() {
     check "sad-app instalada en $APP_DIR/.venv" test -x "$APP_DIR/.venv/bin/gunicorn"
     check_soft "Réplica recibiendo latidos del primario" heartbeat_fresh 20
   fi
+  case " $SNAPSHOT_NODES " in *" $node "*) check "Fotos con historial programadas" systemctl is-active --quiet sad-snapshot.timer ;; esac
   check_soft "Todos los nodos resuelven por nombre" all_names_resolve
   for s in $SERVERS; do
     [ "$s" = "$node" ] && continue
@@ -1121,7 +1195,7 @@ cmd_install() {
       is_etcd_member "$node" && step_etcd "$node"
       write_agent "$role" "$node"
       step_nfs_server; step_app "$node"
-      step_replicator; step_elector
+      step_replicator; step_snapshots "$node"; step_elector
       if [ "$node" = "$(first_server)" ] && ! is_primary_local; then
         wait_for "$node ganó la elección y es el primario" 30 is_primary_local || true
         is_primary_local && wait_for "sad-app responde" 25 curl -fsS "http://127.0.0.1:$APP_PORT/healthz" || true
@@ -1152,7 +1226,7 @@ cmd_doctor() {
   step "Consenso con etcd"
   is_etcd_member "$(hostname)" && check "etcd activo en este nodo" svc_active etcd
   if elector status >/dev/null 2>&1; then elector status | sed 's/^/     /'; ok "etcd tiene mayoría"
-  else warn "etcd sin mayoría. Deben estar encendidos al menos dos de: $ETCD_MEMBERS"; fi
+  else warn "etcd sin mayoría. Deben estar encendidos al menos $(etcd_quorum) de: $ETCD_MEMBERS"; fi
   step "Los demás nodos"
   printf '     %-12s %-16s %-6s %-6s %-6s %s\n' NODO IP PING SSH AGENTE "DESFASE RELOJ"
   for n in $ALL_NODES; do
@@ -1343,7 +1417,44 @@ PY
   FAILS=0; validate_server "$NODE_NAME"; finish
 }
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+# Lista las fotos de este servidor, o los archivos de una foto.
+cmd_snapshots() {
+  need_root "$@"; load_config
+  local dir="$STATE_DIR/snapshots" f="${2:-}"
+  [ -d "$dir" ] || die "Este nodo no guarda fotos. Las guardan: $SNAPSHOT_NODES"
+  if [ -z "$f" ]; then
+    printf '%-16s %8s %s\n' FOTO ARCHIVOS TAMAÑO
+    find "$dir" -mindepth 1 -maxdepth 1 -type d -name '2*' ! -name '*.tmp' | sort | while read -r d; do
+      printf '%-16s %8s %s\n' "$(basename "$d")" "$(find "$d" -type f ! -path '*/.cluster/*' | wc -l)" "$(du -sh "$d" | cut -f1)"
+    done
+    info "Ver una foto:  ./setup.sh snapshots <foto>    Recuperar:  ./setup.sh restore <foto> <ruta>"
+  else
+    [ -d "$dir/$f" ] || die "No existe la foto $f"
+    (cd "$dir/$f" && find . -type f ! -path './.cluster/*' | sed 's|^\./||' | sort)
+  fi
+}
+
+# Recupera un archivo o carpeta de una foto. En el primario lo escribe en la carpeta
+# compartida y el replicador lo lleva a las demás réplicas. En otro nodo lo deja aparte.
+cmd_restore() {
+  need_root "$@"; load_config
+  local f="${2:-}" rel="${3:-}" src dst
+  [ -n "$f" ] && [ -n "$rel" ] || die "Uso: ./setup.sh restore <foto> <ruta dentro de la carpeta>"
+  src="$STATE_DIR/snapshots/$f/$rel"
+  [ -e "$src" ] || die "No existe $rel en la foto $f. Mira  ./setup.sh snapshots $f"
+  if is_primary_local; then dst="$EXPORT_DIR/$rel"
+  else
+    dst="$LAB_HOME/recuperado-$f/$rel"
+    warn "Este servidor no es el primario. Lo dejo en $dst. Cópialo a la carpeta desde un cliente."
+  fi
+  mkdir -p "$(dirname "$dst")"
+  rsync -a "$src" "$dst"
+  chown -R "$LAB_USER":"$LAB_USER" "$dst"
+  log_event "recuperado $rel de la foto $f"
+  ok "Recuperado $rel de la foto $f en $dst"
+}
+
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
 
 main() {
 case "${1:-}" in
@@ -1354,6 +1465,8 @@ case "${1:-}" in
   simulate-failure)  cmd_simulate_failure "$@" ;;
   failback)          cmd_failback "$@" ;;
   demote)            cmd_demote "$@" ;;
+  snapshots)         cmd_snapshots "$@" ;;
+  restore)           cmd_restore "$@" ;;
   -h|--help|help|"") usage ;;
   *) usage; exit 1 ;;
 esac
