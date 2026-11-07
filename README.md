@@ -191,7 +191,7 @@ Se instala con un solo script, `setup.sh`.
 | Rol | Dónde corre | Qué hace |
 | --- | --- | --- |
 | `servidor-a` a `servidor-d` | VM de VirtualBox con Ubuntu Server | Exportan `/srv/compartido` por NFS. El primario lo exporta con escritura, ejecuta `sad-app` y replica hacia los demás. Las réplicas lo exportan en solo lectura y atienden lecturas. |
-| `cliente 1` a `cliente 3` | WSL en el computador de cada integrante | Forman el clúster etcd. Montan `/mnt/compartido` con escritura desde el primario y `/mnt/lectura` en solo lectura desde la réplica más cercana. |
+| `cliente 1` a `cliente 3` | WSL en el computador de cada integrante | Son miembros de etcd. Montan `/mnt/compartido` con escritura desde el primario y `/mnt/lectura` en solo lectura desde la réplica más cercana. |
 
 Los servidores van en máquinas virtuales porque el kernel de WSL no trae el servidor NFS.
 Los clientes sí pueden ir en WSL.
@@ -199,7 +199,8 @@ Los clientes sí pueden ir en WSL.
 ### Consenso, contrato y fencing
 
 Quién es el primario lo decide etcd, que replica sus datos con el algoritmo de consenso
-Raft entre los tres clientes. Mientras dos de los tres respondan, etcd funciona.
+Raft entre cinco miembros: los tres clientes, `servidor-c` y `servidor-d`. Mientras tres de
+los cinco respondan, etcd funciona, así que aguanta que se apaguen dos.
 
 1. **Elección.** Cada servidor ejecuta `sad-elector` (`cluster/elector.py`). El primario es
    quien logra crear la llave `/sad-lab/primario` en etcd. La creación es atómica, así que
@@ -217,7 +218,7 @@ Raft entre los tres clientes. Mientras dos de los tres respondan, etcd funciona.
 6. **Sucesión.** El último primario va primero y después el orden de `SERVERS`. Cada servidor
    espera `RANK_DELAY` segundos por cada puesto que tiene delante.
 
-Si se apagan dos de los tres clientes, etcd pierde la mayoría, nadie puede ser primario y
+Si se apagan tres de los cinco miembros, etcd pierde la mayoría, nadie puede ser primario y
 la carpeta queda en solo lectura. Es la decisión del teorema CAP: ante una partición, el
 sistema prefiere consistencia antes que aceptar escrituras que podrían perderse.
 
@@ -231,6 +232,19 @@ confirmen.
 Cada cliente monta además `/mnt/lectura` en solo lectura desde la réplica con menor latencia.
 Las lecturas se reparten entre las réplicas y el primario atiende las escrituras.
 
+### Fotos con historial
+
+La réplica copia al instante también los borrados y los errores, así que no protege contra
+un error humano. Por eso cada servidor guarda una foto de la carpeta cada 15 minutos y
+conserva las de las últimas 24 horas. Las fotos usan `rsync --link-dest`: un archivo que no
+cambió se enlaza con la foto anterior y no ocupa espacio de nuevo.
+
+```bash
+sudo /opt/sad-app/setup.sh snapshots                         # lista de fotos
+sudo /opt/sad-app/setup.sh snapshots 20261107-1100           # archivos de una foto
+sudo /opt/sad-app/setup.sh restore 20261107-1100 informe.txt # en el primario
+```
+
 ### Uso
 
 Todos los nodos deben tener el mismo `deploy/lab.conf`. Créalo a partir de
@@ -238,7 +252,7 @@ Todos los nodos deben tener el mismo `deploy/lab.conf`. Créalo a partir de
 `SSH_PASSWORD` con una clave para el usuario común `sadlab`.
 
 ```bash
-# primero los clientes, que forman etcd. Con dos ya hay mayoría.
+# primero los clientes, que son tres de los cinco miembros de etcd. Con tres hay mayoría.
 sudo ./setup.sh cliente 1
 sudo ./setup.sh cliente 2
 sudo ./setup.sh cliente 3
@@ -260,6 +274,8 @@ muestra una marca por cada comprobación.
 | `./setup.sh test` | Desde un cliente. Acceso compartido, concurrencia de los tres clientes con y sin bloqueo, retraso hacia cada réplica y lectura desde la réplica. |
 | `./setup.sh simulate-failure` | En el primario. Lo detiene sin soltar el contrato y otro servidor asume. |
 | `./setup.sh failback` | En el servidor que debe volver a ser primario. Reserva el puesto en etcd, pide al primario actual que ceda, trae sus datos y gana la elección. |
+| `./setup.sh snapshots [foto]` | En un servidor. Lista las fotos con historial, o los archivos de una foto. |
+| `./setup.sh restore <foto> <ruta>` | En el primario. Recupera un archivo o carpeta de una foto y la réplica lo lleva a los demás. |
 | `python3 /opt/sad-app/cluster/elector.py status` | Primario, época, reserva, miembros de etcd y líder de Raft. |
 
 La configuración queda en `/etc/sad-lab/lab.conf` y el proyecto en `/opt/sad-app` en

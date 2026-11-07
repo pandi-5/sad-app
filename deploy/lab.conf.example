@@ -9,9 +9,10 @@ SERVERS="servidor-a servidor-b servidor-c servidor-d"
 CLIENTS="cliente-1 cliente-2 cliente-3"
 
 # ---------- Consenso con etcd ----------
-# Nodos que forman el clúster etcd, que usa Raft. Vacío usa los CLIENTS. Con tres miembros
-# la mayoría es dos: si se apagan dos, nadie puede ser primario y todo queda en solo lectura.
-ETCD_MEMBERS=""
+# Nodos que forman el clúster etcd, que usa Raft. Con cinco miembros la mayoría es tres y
+# aguanta que se apaguen dos. Si se apagan tres, nadie puede ser primario y todo queda en
+# solo lectura. Vacío usa los clientes más los últimos servidores, hasta cinco.
+ETCD_MEMBERS="cliente-1 cliente-2 cliente-3 servidor-c servidor-d"
 # Segundos del contrato del primario. Si no lo renueva, vence y otro asume. A un tercio de
 # este tiempo sin contacto con la mayoría, el primario se pone solo en solo lectura.
 LEASE_TTL=6
@@ -80,6 +81,13 @@ SEED_USERS="cliente1:ClaveCliente123,cliente2:ClaveCliente456,cliente3:ClaveClie
 # ---------- Réplica y conmutación ----------
 # El replicador copia apenas cambia un archivo. Este es el máximo entre latidos.
 REPL_INTERVAL=2
+
+# ---------- Fotos con historial ----------
+# Servidores que guardan fotos de la carpeta. Vacío usa todos los servidores.
+SNAPSHOT_NODES=""
+# Minutos entre fotos y cuántas se conservan. 15 y 96 son las últimas 24 horas.
+SNAPSHOT_EVERY=15
+SNAPSHOT_KEEP=96
 
 # yes permite sudo sin contraseña al usuario del laboratorio, necesario para failback.
 SUDO_NOPASSWD=yes
