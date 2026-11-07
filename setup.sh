@@ -337,7 +337,10 @@ EOF
     warn "SSH_PASSWORD está vacío. Las llaves SSH tendrán que copiarse a mano."
   fi
   if [ "$SUDO_NOPASSWD" = "yes" ]; then
-    echo "$LAB_USER ALL=(ALL) NOPASSWD:ALL" | write_file /etc/sudoers.d/90-sad-lab 440 && ok "sudo sin contraseña para $LAB_USER" || ok "sudo ya configurado"
+    # Archivo propio del usuario del laboratorio. Antes se escribía 90-sad-lab, el mismo
+    # que la instalación desatendida usa para el usuario de la VM, y ese usuario perdía
+    # sudo sin contraseña en la segunda pasada.
+    echo "$LAB_USER ALL=(ALL) NOPASSWD:ALL" | write_file "/etc/sudoers.d/91-sad-lab-$LAB_USER" 440 && ok "sudo sin contraseña para $LAB_USER" || ok "sudo ya configurado"
   fi
 }
 

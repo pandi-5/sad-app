@@ -75,7 +75,7 @@ $sshBlock = @"
   user-data:
 "@
 $tpl = $tpl -replace "(?m)^  user-data:\s*`r?`n", ($sshBlock + "`n")
-$late = "    - curtin in-target --target=/target -- sh -c 'echo `"$User ALL=(ALL) NOPASSWD:ALL`" > /etc/sudoers.d/90-sad-lab && chmod 440 /etc/sudoers.d/90-sad-lab'`n    - cp /cdrom/vboxpostinstall.sh /target/root/vboxpostinstall.sh"
+$late = "    - curtin in-target --target=/target -- sh -c 'echo `"$User ALL=(ALL) NOPASSWD:ALL`" > /etc/sudoers.d/89-sad-lab-vm && chmod 440 /etc/sudoers.d/89-sad-lab-vm'`n    - cp /cdrom/vboxpostinstall.sh /target/root/vboxpostinstall.sh"
 $tpl = $tpl -replace "(?m)^    - cp /cdrom/vboxpostinstall.sh /target/root/vboxpostinstall.sh", $late
 $tplPath = Join-Path $logDir "autoinstall-user-data.generado"
 [IO.File]::WriteAllText($tplPath, ($tpl -replace "`r`n", "`n"), (New-Object Text.UTF8Encoding($false)))
@@ -99,9 +99,9 @@ $nodes = @(
 # nodos en un solo computador. Puertos SSH 2205 a 2207.
 if ($ConClientes -or $env:SAD_LOCAL -eq "1") {
   $nodes += @(
-    @{ Name = "sad-cliente-1"; Host = "cliente-1"; Ram = 1024; Cpu = 1; DiskMb = 12288; Port = 2205; Web = 0 },
-    @{ Name = "sad-cliente-2"; Host = "cliente-2"; Ram = 1024; Cpu = 1; DiskMb = 12288; Port = 2206; Web = 0 },
-    @{ Name = "sad-cliente-3"; Host = "cliente-3"; Ram = 1024; Cpu = 1; DiskMb = 12288; Port = 2207; Web = 0 }
+    @{ Name = "sad-cliente-1"; Host = "cliente-1"; Ram = 2048; Cpu = 1; DiskMb = 12288; Port = 2205; Web = 0 },
+    @{ Name = "sad-cliente-2"; Host = "cliente-2"; Ram = 2048; Cpu = 1; DiskMb = 12288; Port = 2206; Web = 0 },
+    @{ Name = "sad-cliente-3"; Host = "cliente-3"; Ram = 2048; Cpu = 1; DiskMb = 12288; Port = 2207; Web = 0 }
   )
 }
 
