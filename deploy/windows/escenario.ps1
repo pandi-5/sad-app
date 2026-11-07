@@ -109,12 +109,13 @@ if ($etapas -contains "Fencing") {
   Titulo "10. Fencing: el primario pierde la red y se aísla solo"
   $p = Lider
   if (-not $p) { $p = "servidor-c" }
-  $null = Remoto $p "sudo tailscale down"
+  $null = Remoto $p "sudo systemctl stop tailscaled"
   Start-Sleep -Seconds 4
   Evidencia "fencing-aislado-$p" $p "journalctl -u sad-elector -n 6 --no-pager; echo; grep -E '^/srv' /etc/exports; test -f /var/lib/sad-lab/primary && echo 'sigue primario' || echo 'ya no es primario'"
   for ($i = 0; $i -lt 30; $i++) { $q = Lider; if ($q -and $q -ne $p) { break }; Start-Sleep -Seconds 2 }
+  Start-Sleep -Seconds 5
   Evidencia "fencing-nuevo-primario" "cliente-1" "$E status; echo; $S status"
-  $null = Remoto $p "sudo tailscale up --accept-dns=false"
+  $null = Remoto $p "sudo systemctl start tailscaled; sleep 3; sudo systemctl start sad-hosts.service 2>/dev/null; true"
   Start-Sleep -Seconds 8
   EsperarEscritura "cliente-1"
 }

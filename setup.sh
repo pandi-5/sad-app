@@ -566,7 +566,8 @@ PY
 )"
 [ -n "$block" ] || exit 0
 new="$(sed '/# sad-lab begin/,/# sad-lab end/d' /etc/hosts; printf '# sad-lab begin\n%s\n# sad-lab end\n' "$block")"
-if [ "$new" != "$(cat /etc/hosts)" ]; then printf '%s\n' "$new" > /etc/hosts; fi
+# Se escribe en un temporal y se renombra, así nunca hay un instante sin nombres.
+if [ "$new" != "$(cat /etc/hosts)" ]; then printf '%s\n' "$new" > /etc/hosts.sad-tmp && chmod 644 /etc/hosts.sad-tmp && mv -f /etc/hosts.sad-tmp /etc/hosts; fi
 EOF
   write_file /etc/systemd/system/sad-hosts.service <<EOF || true
 [Unit]
@@ -963,6 +964,10 @@ step_etcd() {
   local node="$1" m cluster=""
   step "Miembro de etcd $node"
   apt_install etcd-server
+  # etcdctl viene aparte en Ubuntu. Sirve para ver la salud del clúster en las pruebas.
+  command -v etcdctl >/dev/null 2>&1 || {
+    NEEDRESTART_MODE=a DEBIAN_FRONTEND=noninteractive apt-get install -y -qq etcd-client >>"$LOG_FILE" 2>&1 \
+      && ok "Instalado etcdctl" || warn "No se pudo instalar etcd-client, las pruebas usan el elector"; }
   for m in $ETCD_MEMBERS; do cluster="$cluster${cluster:+,}$m=http://$(addr_of "$m"):2380"; done
   # Cada conjunto de miembros tiene su propia carpeta de datos y su propio token. Así,
   # al pasar de 3 a 5 miembros, etcd arranca un clúster nuevo en vez de mezclar los dos.
