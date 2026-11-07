@@ -22,7 +22,8 @@ param(
   [string[]]$Solo = @(),
   [int]$EsperaMinutos = 60,
   [int]$RamMb = 1536,
-  [switch]$RedLocal
+  [switch]$RedLocal,
+  [switch]$ConClientes
 )
 $ErrorActionPreference = "Stop"
 $logDir = Join-Path $PSScriptRoot "..\..\logs"; New-Item -ItemType Directory -Force $logDir | Out-Null
@@ -94,6 +95,15 @@ $nodes = @(
   @{ Name = "sad-servidor-c"; Host = "servidor-c"; Ram = $RamMb; Cpu = 1; DiskMb = 15360; Port = 2203; Web = 8003 },
   @{ Name = "sad-servidor-d"; Host = "servidor-d"; Ram = $RamMb; Cpu = 1; DiskMb = 15360; Port = 2204; Web = 8004 }
 )
+# Con -ConClientes los tres clientes también son VM de este equipo, para tener los siete
+# nodos en un solo computador. Puertos SSH 2205 a 2207.
+if ($ConClientes -or $env:SAD_LOCAL -eq "1") {
+  $nodes += @(
+    @{ Name = "sad-cliente-1"; Host = "cliente-1"; Ram = 1024; Cpu = 1; DiskMb = 12288; Port = 2205; Web = 0 },
+    @{ Name = "sad-cliente-2"; Host = "cliente-2"; Ram = 1024; Cpu = 1; DiskMb = 12288; Port = 2206; Web = 0 },
+    @{ Name = "sad-cliente-3"; Host = "cliente-3"; Ram = 1024; Cpu = 1; DiskMb = 12288; Port = 2207; Web = 0 }
+  )
+}
 
 $Solo = @($Solo | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 if ($Solo.Count -gt 0) { $nodes = @($nodes | Where-Object { $Solo -contains $_.Host }); $Rebuild = $true }
@@ -150,5 +160,5 @@ foreach ($n in $nodes) {
     Start-Sleep 20
   }
 }
-Write-Host "`nLos cuatro servidores están listos. Usuario $User. Sigue con 3-desplegar.cmd."
+Write-Host "`nLas $($nodes.Count) máquinas están listas. Usuario $User. Sigue con 3-desplegar.cmd."
 try { Stop-Transcript | Out-Null } catch { }

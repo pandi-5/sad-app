@@ -1,6 +1,9 @@
 Normal
 Web
+Fotos
+Etcd
 Caida
 Caida2
+Fencing
 WebCaida
 Failback

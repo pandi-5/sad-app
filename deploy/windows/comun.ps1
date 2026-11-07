@@ -4,8 +4,9 @@ $ErrorActionPreference = "Continue"
 $OutputEncoding = [Text.Encoding]::UTF8
 
 $script:Repo   = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$script:LogDir = Join-Path $script:Repo "logs";     New-Item -ItemType Directory -Force $script:LogDir | Out-Null
-$script:CapDir = Join-Path $script:Repo "capturas"; New-Item -ItemType Directory -Force $script:CapDir | Out-Null
+$script:LogDir = if ($env:SAD_LOGDIR) { $env:SAD_LOGDIR } else { Join-Path $script:Repo "logs" }
+$script:CapDir = if ($env:SAD_CAPDIR) { $env:SAD_CAPDIR } else { Join-Path $script:Repo "capturas" }
+New-Item -ItemType Directory -Force $script:LogDir, $script:CapDir | Out-Null
 $script:User   = "lab"
 # Servidores, máquinas virtuales de este equipo. Se entra por SSH a un puerto local.
 $script:Nodos  = @(
@@ -16,6 +17,16 @@ $script:Nodos  = @(
 )
 # Clientes, máquinas WSL de cada integrante.
 $script:Clientes = @("cliente-1", "cliente-2", "cliente-3")
+# SAD_LOCAL=1  los siete nodos son VM de este equipo. Los clientes van primero porque
+# son miembros de etcd, y a todos se entra directo por su puerto local.
+$script:Local = ($env:SAD_LOCAL -eq "1")
+if ($script:Local) {
+  $script:Nodos = @(
+    @{ Host = "cliente-1"; Port = 2205; Arg = "cliente 1" },
+    @{ Host = "cliente-2"; Port = 2206; Arg = "cliente 2" },
+    @{ Host = "cliente-3"; Port = 2207; Arg = "cliente 3" }
+  ) + $script:Nodos
+}
 # Servidor que corre en ESTE computador. Cada integrante tiene solo una VM, así que a
 # los demás nodos se llega saltando desde ella por Tailscale como sadlab.
 # Se cambia con la variable de entorno SAD_PROPIO, por ejemplo  set SAD_PROPIO=servidor-b
@@ -26,7 +37,7 @@ function PortDe($host_) { ($script:Nodos | Where-Object { $_.Host -eq $host_ }).
 
 # ---------- ejecución remota ----------
 function Remoto([string]$nodo, [string]$cmd, [switch]$Tty, [string]$Log = "") {
-  if ($nodo -ne $script:Propio) {
+  if (-not $script:Local -and $nodo -ne $script:Propio) {
     # El nodo está en otro computador. Se ejecuta desde la VM propia como sadlab por Tailscale.
     $q = $cmd -replace "'", "'\''"
     $cmd = "sudo -u sadlab ssh -tt -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new sadlab@$nodo '$q'"
