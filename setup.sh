@@ -920,7 +920,8 @@ step_elector() {
     systemctl disable --now sad-watchdog >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/sad-watchdog.service
   fi
-  write_file /etc/systemd/system/sad-elector.service <<EOF || true
+  local changed=0 sum
+  write_file /etc/systemd/system/sad-elector.service <<EOF && changed=1
 [Unit]
 Description=Elector del servidor primario con etcd
 After=network-online.target nfs-server.service sad-agent.service tailscaled.service
@@ -935,7 +936,22 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable sad-elector >/dev/null 2>&1
-  systemctl restart sad-elector
+  # Reiniciar el elector del primario lo obliga a soltar el contrato y provoca una
+  # elección innecesaria. Solo se reinicia si cambió el servicio o el código.
+  sum="$(sha256sum "$APP_DIR/cluster/elector.py" | cut -c1-16)"
+  [ "$(cat $STATE_DIR/elector.sum 2>/dev/null)" = "$sum" ] || changed=1
+  if [ "$changed" = 1 ] || ! systemctl is-active --quiet sad-elector; then
+    systemctl restart sad-elector
+    mkdir -p $STATE_DIR; echo "$sum" > $STATE_DIR/elector.sum
+    # Si este nodo sigue siendo el dueño del contrato, espera a que vuelva a exportar
+    # con escritura antes de la validación.
+    local i
+    for i in $(seq 1 15); do
+      [ "$(elector leader 2>/dev/null)" = "$(hostname -s)" ] || break
+      [ -f $STATE_DIR/primary ] && break
+      sleep 1
+    done
+  fi
   ok "Elector activo, contrato de ${LEASE_TTL}s con etcd en $ETCD_MEMBERS"
   if elector status >/dev/null 2>&1; then ok "etcd tiene mayoría"
   else warn "etcd todavía no tiene mayoría. Deben estar listos $(etcd_quorum) de: $ETCD_MEMBERS"; fi
