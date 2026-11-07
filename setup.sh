@@ -377,8 +377,10 @@ step_identity() {
   else ok "Nombre del equipo ya es $node"
   fi
   grep -qE "^127\.0\.1\.1\s+$node\b" /etc/hosts || echo "127.0.1.1 $node" >> /etc/hosts
-  sed -i '/# sad-lab begin/,/# sad-lab end/d' /etc/hosts
+  # En modo real el bloque lo mantiene sad-hosts. Borrarlo aquí dejaba al nodo unos
+  # segundos sin resolver los nombres, el elector perdía etcd y el primario se aislaba.
   if [ "$OVERLAY_MODE" != "real" ]; then
+    sed -i '/# sad-lab begin/,/# sad-lab end/d' /etc/hosts
     {
       echo "# sad-lab begin"
       for n in $ALL_NODES; do echo "$(addr_of "$n") $n"; done
@@ -920,7 +922,8 @@ step_elector() {
     systemctl disable --now sad-watchdog >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/sad-watchdog.service
   fi
-  local changed=0 sum
+  local changed=0 sum was_primary=0
+  is_primary_local && was_primary=1
   write_file /etc/systemd/system/sad-elector.service <<EOF && changed=1
 [Unit]
 Description=Elector del servidor primario con etcd
@@ -945,12 +948,9 @@ EOF
     mkdir -p $STATE_DIR; echo "$sum" > $STATE_DIR/elector.sum
     # Si este nodo sigue siendo el dueño del contrato, espera a que vuelva a exportar
     # con escritura antes de la validación.
-    local i
-    for i in $(seq 1 15); do
-      [ "$(elector leader 2>/dev/null)" = "$(hostname -s)" ] || break
-      [ -f $STATE_DIR/primary ] && break
-      sleep 1
-    done
+    # El elector arranca en solo lectura y vuelve a ganar cuando vence su contrato
+    # anterior. Si este nodo era el primario, espera a que recupere la escritura.
+    [ "$was_primary" = 1 ] && wait_for "$(hostname -s) recupera el puesto de primario" 25 is_primary_local || true
   fi
   ok "Elector activo, contrato de ${LEASE_TTL}s con etcd en $ETCD_MEMBERS"
   if elector status >/dev/null 2>&1; then ok "etcd tiene mayoría"
